@@ -48,11 +48,11 @@ TOTAL_CLASSES = 10          # Total number of classes in the dataset
 LOG_DIR = './split_mnist_results'
 
 ## Evaluation options
-TRAIN_SINGLE_EPOCH = True
-EVAL_SINGLE_HEAD = False
 
 ## Task split
 TASK_LABELS= [[0,1],[2,3],[4,5],[6,7],[8,9]]
+#TASK_LABELS= [[1,4],[2,0],[3,7],[8,9],[6,5]]
+#TASK_LABELS= [[7,5],[9,1],[3,6],[4,2],[8,0]]
 
 def get_arguments():
     """Parse all the arguments provided from the CLI.
@@ -61,6 +61,10 @@ def get_arguments():
       A list of parsed arguments.
     """
     parser = argparse.ArgumentParser(description="Script for split mnist experiment.")
+    parser.add_argument("--train-single-epoch", action="store_true",
+                       help="If option is chosen then train for single epoch")
+    parser.add_argument("--eval-single-head", action="store_true",
+                       help="If option is chosen then evaluate on a single head setting.")
     parser.add_argument("--num-runs", type=int, default=NUM_RUNS,
                        help="Total runs/ experiments over which accuracy is averaged.")
     parser.add_argument("--train-iters", type=int, default=TRAIN_ITERS,
@@ -89,7 +93,8 @@ def get_arguments():
                        help="Directory where the plots and model accuracies will be stored.")
     return parser.parse_args()
 
-def train_task_sequence(model, sess, datasets, task_labels, do_sampling, samples_per_class, train_iters, batch_size, num_runs):
+def train_task_sequence(model, sess, datasets, task_labels, train_single_epoch, eval_single_head, do_sampling, 
+        samples_per_class, train_iters, batch_size, num_runs):
     """
     Train and evaluate LLL system such that we only see a example once
     Args:
@@ -151,7 +156,7 @@ def train_task_sequence(model, sess, datasets, task_labels, do_sampling, samples
             num_train_examples = task_train_images.shape[0]
 
             # Train a task observing sequence of data
-            if TRAIN_SINGLE_EPOCH:
+            if train_single_epoch:
                 # TODO: Use a fix number of batches for now to avoid complicated logic while averaging accuracies
                 #num_iters = num_train_examples// batch_size
                 num_iters = 10000 // batch_size
@@ -176,10 +181,10 @@ def train_task_sequence(model, sess, datasets, task_labels, do_sampling, samples
             # Training loop for task T
             for iters in range(num_iters):
 
-                if TRAIN_SINGLE_EPOCH:
+                if train_single_epoch:
                     if (iters < 10) or (iters % 50 == 0):
                         # Snapshot the current performance across all tasks after each mini-batch
-                        fbatch = test_task_sequence(model, sess, datasets, task_labels, eval_single_head=EVAL_SINGLE_HEAD)
+                        fbatch = test_task_sequence(model, sess, datasets, task_labels, eval_single_head=eval_single_head)
                         ftask.append(fbatch)
                         # Set the output labels over which the model needs to be trained 
                         if do_sampling:
@@ -267,13 +272,13 @@ def train_task_sequence(model, sess, datasets, task_labels, do_sampling, samples
 
                     print('\t\t\t\tEpisodic memory is saved for Task%d!'%(task))
 
-            if TRAIN_SINGLE_EPOCH: 
-                fbatch = test_task_sequence(model, sess, datasets, task_labels, eval_single_head=EVAL_SINGLE_HEAD)
+            if train_single_epoch: 
+                fbatch = test_task_sequence(model, sess, datasets, task_labels, eval_single_head=eval_single_head)
                 ftask.append(fbatch)
                 ftask = np.array(ftask)
             else:
                 # List to store accuracy for all the tasks for the current trained model
-                ftask = test_task_sequence(model, sess, datasets, task_labels, eval_single_head=EVAL_SINGLE_HEAD)
+                ftask = test_task_sequence(model, sess, datasets, task_labels, eval_single_head=eval_single_head)
             
             # Store the accuracies computed at task T in a list
             evals.append(ftask)
@@ -339,8 +344,8 @@ def main():
     # Generate the experiment key and store the meta data in a file
     exper_meta_data = {'DATASET': 'SPLIT_MNIST',
             'NUM_RUNS': args.num_runs,
-            'EVAL_SINGLE_HEAD': EVAL_SINGLE_HEAD, 
-            'TRAIN_SINGLE_EPOCH': TRAIN_SINGLE_EPOCH, 
+            'EVAL_SINGLE_HEAD': args.eval_single_head, 
+            'TRAIN_SINGLE_EPOCH': args.train_single_epoch, 
             'IMP_METHOD': args.imp_method, 
             'SYNAP_STGTH': args.synap_stgth,
             'FISHER_EMA_DECAY': args.fisher_ema_decay,
@@ -350,7 +355,7 @@ def main():
             'BATCH_SIZE': args.batch_size, 
             'EPS_MEMORY': args.do_sampling, 
             'MEM_SIZE': args.mem_size}
-    experiment_id = "SPLIT_MNIST_%r_%r_%s_%s_%s_%r_%s-"%(EVAL_SINGLE_HEAD, TRAIN_SINGLE_EPOCH, args.imp_method, str(args.synap_stgth).replace('.', '_'), 
+    experiment_id = "SPLIT_MNIST_%r_%r_%s_%s_%s_%r_%s-"%(args.eval_single_head, args.train_single_epoch, args.imp_method, str(args.synap_stgth).replace('.', '_'), 
             str(args.batch_size), args.do_sampling, str(args.mem_size)) + datetime.datetime.now().strftime("%y-%m-%d-%H-%M")
     snapshot_experiment_meta_data(args.log_dir, experiment_id, exper_meta_data)
 
@@ -403,8 +408,8 @@ def main():
         config.gpu_options.allow_growth = True
 
         with tf.Session(config=config, graph=graph) as sess:
-            runs = train_task_sequence(model, sess, datasets, TASK_LABELS, args.do_sampling, 
-                    args.mem_size, args.train_iters, args.batch_size, args.num_runs)
+            runs = train_task_sequence(model, sess, datasets, TASK_LABELS, args.train_single_epoch, args.eval_single_head, 
+                    args.do_sampling, args.mem_size, args.train_iters, args.batch_size, args.num_runs)
             # Close the session
             sess.close()
 
@@ -415,7 +420,7 @@ def main():
     # Store all the results in one dictionary to process later
     exper_acc = dict(mean=acc_mean, std=acc_std)
 
-    if TRAIN_SINGLE_EPOCH:
+    if args.train_single_epoch:
         print('A5: {}'.format(acc_mean[-1,-1,:].mean()))
     else:
         print(exper_acc)
