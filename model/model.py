@@ -540,12 +540,11 @@ class Model:
         self.mse_gradients = tf.gradients(self.mse, self.trainable_vars)
         #with tf.control_dependencies([self.mse_gradients]):
         # Keep on adding gradients to the omega
-        self.accumulate_hebbian_scores = [tf.assign_add(omega, grad) for omega, grad in zip(self.hebbian_score_vars, self.mse_gradients)]
-
+        self.accumulate_hebbian_scores = [tf.assign_add(omega, tf.abs(grad)) for omega, grad in zip(self.hebbian_score_vars, self.mse_gradients)]
         # Average across the total images
         self.average_hebbian_scores = [tf.assign(omega, omega*(1.0/self.train_samples)) for omega in self.hebbian_score_vars]
         # Reset the hebbian importance variables
-        self.reset_hebbian_scores = [tf.assign(omega, tf.zeros_like(omega)) for omeha in self.hebbian_score_vars]
+        self.reset_hebbian_scores = [tf.assign(omega, tf.zeros_like(omega)) for omega in self.hebbian_score_vars]
 
 #################################################################################
 #### External APIs of the class. These will be called/ exposed externally #######
