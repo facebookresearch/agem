@@ -663,7 +663,7 @@ class Model:
             num_samples = train_x.shape[0]
             for iters in range(num_samples// batch_size):
                 offset = iters * batch_size
-                sess.run(self.accumulate_hebbian_scores, feed_dict={self.x: train_x[offset:offset+batch_size]})
+                sess.run(self.accumulate_hebbian_scores, feed_dict={self.x: train_x[offset:offset+batch_size], self.keep_prob: 1.0})
 
             # Average the hebbian scores across the training examples
             sess.run(self.average_hebbian_scores, feed_dict={self.train_samples: num_samples})

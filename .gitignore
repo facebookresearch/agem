@@ -1,0 +1,12 @@
+*.pt
+*.txt
+*.pyc
+*.pdf
+*.tar.gz
+*.npz
+*.swp
+*MNIST_data*
+*CIFAR_data*
+*_experiment*
+.nfs*
+*results*

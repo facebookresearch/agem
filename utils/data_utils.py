@@ -40,7 +40,7 @@ def construct_split_cifar(task_labels):
     datasets = []
 
     # Data splits
-    sets = ["train", "test"]
+    sets = ["train", "validation", "test"]
 
     for task in task_labels:
 
@@ -67,6 +67,11 @@ def construct_split_cifar(task_labels):
                     'images':deepcopy(this_set[0][class_indices, :]),
                     'labels':deepcopy(this_set[1][class_indices, :]),
                 }
+            elif set_name == "validation":
+                validation = {
+                    'images':deepcopy(this_set[0][class_indices, :]),
+                    'labels':deepcopy(this_set[1][class_indices, :]),
+                }
             elif set_name == "test":
                 test = {
                     'images':deepcopy(this_set[0][class_indices, :]),
@@ -75,6 +80,7 @@ def construct_split_cifar(task_labels):
 
         cifar = {
             'train': train,
+            'validation': validation, 
             'test': test,
         }
 
@@ -92,6 +98,8 @@ def _get_cifar(data_dir):
     """
     x_train = None
     y_train = None
+    x_validation = None
+    y_validation = None
     x_test = None
     y_test = None
     l = None
@@ -129,15 +137,23 @@ def _get_cifar(data_dir):
     # Compute the data mean for normalization
     x_train_mean = np.mean(_X, axis=0)
 
-    x_train = _X
-    y_train = _Y
+    x_train = _X[:40000]
+    y_train = _Y[:40000]
 
-    # Normalize the train set
+    x_validation = _X[40000:]
+    y_validation = _Y[40000:]
+
+    # Normalize the train and validation sets
     x_train -= x_train_mean
+    x_validation -= x_train_mean
 
     dataset['train'].append(x_train)
     dataset['train'].append(y_train)
     dataset['train'].append(l)
+
+    dataset['validation'].append(x_validation)
+    dataset['validation'].append(y_validation)
+    dataset['validation'].append(l)
 
     # Load the test batch of CIFAR-100
     f = open(data_dir + CIFAR_100_DIR + '/test', 'rb')

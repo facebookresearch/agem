@@ -1,5 +1,5 @@
 """
-Training script for split CIFAR 100 experiment.
+Training script for permute MNIST experiment.
 """
 from __future__ import print_function
 
@@ -13,7 +13,7 @@ import tensorflow as tf
 from copy import deepcopy
 from six.moves import cPickle as pickle
 
-from utils.data_utils import construct_split_cifar
+from utils.data_utils import construct_permute_mnist
 from utils.utils import get_sample_weights, sample_from_dataset, concatenate_datasets, samples_for_each_class, sample_from_dataset_icarl
 from utils.vis_utils import plot_acc_multiple_runs, plot_histogram, snapshot_experiment_meta_data, snapshot_experiment_eval
 from model import Model
@@ -24,46 +24,33 @@ from model import Model
 ###############################################################
 
 ## Training Options
-NUM_RUNS = 5           # Number of experiments to average over
-TRAIN_ITERS = 2000      # Number of training iterations per task
+NUM_RUNS = 10           # Number of experiments to average over
+TRAIN_ITERS = 5000      # Number of training iterations per task
 BATCH_SIZE = 16
 LEARNING_RATE = 1e-3    
 RANDOM_SEED = 1234
 VALID_OPTIMS = ['SGD', 'MOMENTUM', 'ADAM']
 OPTIM = 'ADAM'
-OPT_MOMENTUM = 0.9
 OPT_POWER = 0.9
+OPT_MOMENTUM = 0.9
 
 ## Model options
 MODELS = ['VAN', 'PI', 'EWC', 'MAS', 'RWALK'] #List of valid models 
 IMP_METHOD = 'EWC'
 SYNAP_STGTH = 75000
 FISHER_EMA_DECAY = 0.9      # Exponential moving average decay factor for Fisher computation (online Fisher)
-FISHER_UPDATE_AFTER = 50    # Number of training iterations for which the F_{\theta}^t is computed (see Eq. 10 in RWalk paper) 
+FISHER_UPDATE_AFTER = 10    # Number of training iterations for which the F_{\theta}^t is computed (see Eq. 10 in RWalk paper) 
 MEMORY_SIZE_PER_TASK = 10   # Number of samples per task
-IMG_HEIGHT = 32
-IMG_WIDTH = 32
-IMG_CHANNELS = 3
-TOTAL_CLASSES = 100          # Total number of classes in the dataset 
+INPUT_FEATURE_SIZE = 784
+TOTAL_CLASSES = 10          # Total number of classes in the dataset 
 
 ## Logging, saving and testing options
-LOG_DIR = './split_cifar_results'
+LOG_DIR = './permute_mnist_results'
 
 ## Evaluation options
 
-## Task split
-"""
-TASK_LABELS = [[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19, 
-        20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39, 
-        40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,
-        60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79, 
-        80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99]]
-"""
-TASK_LABELS = [[0,1,2,3,4,5,6,7,8,9], [10,11,12,13,14,15,16,17,18,19], 
-        [20,21,22,23,24,25,26,27,28,29], [30,31,32,33,34,35,36,37,38,39], 
-        [40,41,42,43,44,45,46,47,48,49], [50,51,52,53,54,55,56,57,58,59],
-        [60,61,62,63,64,65,66,67,68,69], [70,71,72,73,74,75,76,77,78,79], 
-        [80,81,82,83,84,85,86,87,88,89], [90,91,92,93,94,95,96,97,98,99]]
+## Num Tasks
+NUM_TASKS = 20
 
 def get_arguments():
     """Parse all the arguments provided from the CLI.
@@ -71,13 +58,13 @@ def get_arguments():
     Returns:
       A list of parsed arguments.
     """
-    parser = argparse.ArgumentParser(description="Script for split cifar experiment.")
+    parser = argparse.ArgumentParser(description="Script for permutted mnist experiment.")
     parser.add_argument("--cross-validate-mode", action="store_true",
-            help="If option is chosen then enable the cross validation of the learning rate")
-    parser.add_argument("--train-single-epoch", action="store_true", 
-            help="If option is chosen then train for single epoch")
+                       help="If option is chosen then enable the cross validation of the learning rate")
+    parser.add_argument("--train-single-epoch", action="store_true",
+                       help="If option is chosen then train for single epoch")
     parser.add_argument("--eval-single-head", action="store_true",
-            help="If option is chosen then evaluate on a single head setting.")
+                       help="If option is chosen then evaluate on a single head setting.")
     parser.add_argument("--num-runs", type=int, default=NUM_RUNS,
                        help="Total runs/ experiments over which accuracy is averaged.")
     parser.add_argument("--train-iters", type=int, default=TRAIN_ITERS,
@@ -106,7 +93,7 @@ def get_arguments():
                        help="Directory where the plots and model accuracies will be stored.")
     return parser.parse_args()
 
-def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode, train_single_epoch, eval_single_head, do_sampling, 
+def train_task_sequence(model, sess, datasets, cross_validate_mode, train_single_epoch, eval_single_head, do_sampling, 
         samples_per_class, train_iters, batch_size, num_runs):
     """
     Train and evaluate LLL system such that we only see a example once
@@ -126,6 +113,9 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
 
         # Run the init ops
         model.init_updates(sess)
+
+        # Set the output label space
+        model.set_active_outputs(sess, np.arange(TOTAL_CLASSES))
 
         # List to store accuracies for a run
         evals = []
@@ -155,9 +145,6 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
                 task_train_images = datasets[task]['train']['images']
                 task_train_labels = datasets[task]['train']['labels']
 
-            # Test for the tasks that we've seen so far
-            test_labels += task_labels[task]
-
             # Declare variables to store sample importance if sampling flag is set
             if do_sampling:
                 # Get the sample weighting
@@ -170,21 +157,9 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
 
             # Train a task observing sequence of data
             if train_single_epoch:
-                # TODO: Use a fix number of batches for now to avoid complicated logic while averaging accuracies
-                num_iters = num_train_examples// batch_size
-                #num_iters = 5000 // batch_size
-                if cross_validate_mode:
-                    if do_sampling:
-                        model.set_active_outputs(sess, test_labels)
-                    else:
-                        model.set_active_outputs(sess, task_labels[task])
+                num_iters = num_train_examples // batch_size
             else:
                 num_iters = train_iters
-                # Set the mask only once before starting the training for the task
-                if do_sampling:
-                    model.set_active_outputs(sess, test_labels)
-                else:
-                    model.set_active_outputs(sess, task_labels[task])
 
             # Randomly suffle the training examples
             perm = np.arange(num_train_examples)
@@ -200,21 +175,16 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
             for iters in range(num_iters):
 
                 if train_single_epoch and not cross_validate_mode:
-                    if (iters <= 50 and iters % 5 == 0) or (iters > 50 and iters % 50 == 0):
+                    if (iters < 10) or (iters < 100 and iters % 10 == 0) or (iters % 100 == 0):
                         # Snapshot the current performance across all tasks after each mini-batch
-                        fbatch = test_task_sequence(model, sess, datasets, task_labels, cross_validate_mode, eval_single_head=eval_single_head)
+                        fbatch = test_task_sequence(model, sess, datasets, cross_validate_mode, eval_single_head=eval_single_head)
                         ftask.append(fbatch)
-                        # Set the output labels over which the model needs to be trained 
-                        if do_sampling:
-                            model.set_active_outputs(sess, test_labels)
-                        else:
-                            model.set_active_outputs(sess, task_labels[task])
 
                 offset = (iters * batch_size) % (num_train_examples - batch_size)
 
                 feed_dict = {model.x: train_x[offset:offset+batch_size], model.y_: train_y[offset:offset+batch_size], 
                         model.sample_weights: task_sample_weights[offset:offset+batch_size],
-                        model.training_iters: num_iters, model.train_step: iters, model.keep_prob: 0.5}
+                        model.training_iters: num_iters, model.train_step: iters, model.keep_prob: 1.0}
 
                 if model.imp_method == 'VAN':
                     _, loss = sess.run([model.train, model.reg_loss], feed_dict=feed_dict)
@@ -258,7 +228,7 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
                         model.train, model.update_small_omega, model.reg_loss], feed_dict=feed_dict)
 
 
-                if (iters % 100 == 0):
+                if (iters % 500 == 0):
                     print('Step {:d} {:.3f}'.format(iters, loss))
 
             print('\t\t\t\tTraining for Task%d done!'%(task))
@@ -269,34 +239,13 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
                 model.task_updates(sess, task, task_train_images)
                 print('\t\t\t\tTask updates after Task%d done!'%(task))
 
-                # If sampling flag is set, store few of the samples from previous task
-                if do_sampling:
-                    # Do the uniform sampling/ only get examples from current task
-                    importance_array = np.ones([datasets[task]['train']['images'].shape[0]], dtype=np.float32)
-                    # Get the important samples from the current task
-                    imp_images, imp_labels = sample_from_dataset(datasets[task]['train'], importance_array, 
-                            task_labels[task], samples_per_class)
-
-                    if imp_images is not None:
-                        if last_task_x is None:
-                            last_task_x = imp_images
-                            last_task_y_ = imp_labels
-                        else:
-                            last_task_x = np.concatenate((last_task_x, imp_images), axis=0)
-                            last_task_y_ = np.concatenate((last_task_y_, imp_labels), axis=0)
-
-                    # Delete the importance array now that you don't need it in the current run
-                    del importance_array
-
-                    print('\t\t\t\tEpisodic memory is saved for Task%d!'%(task))
-
             if train_single_epoch and not cross_validate_mode: 
-                fbatch = test_task_sequence(model, sess, datasets, task_labels, cross_validate_mode, eval_single_head=eval_single_head)
+                fbatch = test_task_sequence(model, sess, datasets, cross_validate_mode, eval_single_head=eval_single_head)
                 ftask.append(fbatch)
                 ftask = np.array(ftask)
             else:
                 # List to store accuracy for all the tasks for the current trained model
-                ftask = test_task_sequence(model, sess, datasets, task_labels, cross_validate_mode, eval_single_head=eval_single_head)
+                ftask = test_task_sequence(model, sess, datasets, cross_validate_mode, eval_single_head=eval_single_head)
             
             # Store the accuracies computed at task T in a list
             evals.append(ftask)
@@ -313,29 +262,16 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
 
     return runs
 
-def test_task_sequence(model, sess, test_data, test_tasks, cross_validate_mode, eval_single_head=True):
+def test_task_sequence(model, sess, test_data, cross_validate_mode, eval_single_head=True):
     """
     Snapshot the current performance
     """
     list_acc = []
-
     if cross_validate_mode:
         test_set = 'validation'
     else:
         test_set = 'test'
-
-    if eval_single_head:
-        # Single-head evaluation setting
-        classes_to_distinguish = []
-        for task in test_tasks:
-            classes_to_distinguish += task
-        model.set_active_outputs(sess, classes_to_distinguish)
-
-    for task, labels in enumerate(test_tasks):
-        if not eval_single_head:
-            # Multi-head evaluation setting
-            model.set_active_outputs(sess, labels)
-
+    for task, _ in enumerate(test_data):
         feed_dict = {model.x: test_data[task][test_set]['images'], 
                 model.y_: test_data[task][test_set]['labels'], model.keep_prob: 1.0}
         acc = model.accuracy.eval(feed_dict = feed_dict)
@@ -365,7 +301,7 @@ def main():
         os.makedirs(args.log_dir)
 
     # Generate the experiment key and store the meta data in a file
-    exper_meta_data = {'DATASET': 'SPLIT_CIFAR',
+    exper_meta_data = {'DATASET': 'PERMUTE_MNIST',
             'NUM_RUNS': args.num_runs,
             'EVAL_SINGLE_HEAD': args.eval_single_head, 
             'TRAIN_SINGLE_EPOCH': args.train_single_epoch, 
@@ -378,12 +314,15 @@ def main():
             'BATCH_SIZE': args.batch_size, 
             'EPS_MEMORY': args.do_sampling, 
             'MEM_SIZE': args.mem_size}
-    experiment_id = "SPLIT_CIFAR_%r_%r_%s_%s_%s_%r_%s-"%(args.eval_single_head, args.train_single_epoch, args.imp_method, str(args.synap_stgth).replace('.', '_'), 
+    experiment_id = "PERMUTE_MNIST_%r_%r_%s_%s_%s_%r_%s-"%(args.eval_single_head, args.train_single_epoch, args.imp_method, str(args.synap_stgth).replace('.', '_'), 
             str(args.batch_size), args.do_sampling, str(args.mem_size)) + datetime.datetime.now().strftime("%y-%m-%d-%H-%M")
     snapshot_experiment_meta_data(args.log_dir, experiment_id, exper_meta_data)
 
-    # Load the split cifar dataset
-    datasets = construct_split_cifar(TASK_LABELS)
+    # Load the permute mnist dataset
+    datasets = construct_permute_mnist(NUM_TASKS)
+
+    #for i in range(len(datasets)):
+    #    print(np.unique(np.column_stack(np.nonzero(datasets[i]['train']['labels']))[:,1])
 
     # Variables to store the accuracies and standard deviations of the experiment
     acc_mean = dict()
@@ -398,7 +337,7 @@ def main():
         tf.set_random_seed(RANDOM_SEED)
 
         # Define Input and Output of the model
-        x = tf.placeholder(tf.float32, shape=[None, IMG_HEIGHT, IMG_WIDTH, IMG_CHANNELS])
+        x = tf.placeholder(tf.float32, shape=[None, INPUT_FEATURE_SIZE])
         y_ = tf.placeholder(tf.float32, shape=[None, TOTAL_CLASSES])
         sample_weights = tf.placeholder(tf.float32, shape=[None])
         train_step = tf.placeholder(dtype=tf.float32, shape=())
@@ -421,14 +360,14 @@ def main():
         # Create the Model/ contruct the graph
         model = Model(x, y_, sample_weights, keep_prob, train_samples, training_iters, train_step, 
                 opt, args.imp_method, args.synap_stgth, args.fisher_update_after, args.fisher_ema_decay, 
-                network_arch='CNN')
+                network_arch='FC')
 
         # Set up tf session and initialize variables.
         config = tf.ConfigProto()
         config.gpu_options.allow_growth = True
 
         with tf.Session(config=config, graph=graph) as sess:
-            runs = train_task_sequence(model, sess, datasets, TASK_LABELS, args.cross_validate_mode, args.train_single_epoch, args.eval_single_head, 
+            runs = train_task_sequence(model, sess, datasets, args.cross_validate_mode, args.train_single_epoch, args.eval_single_head, 
                     args.do_sampling, args.mem_size, args.train_iters, args.batch_size, args.num_runs)
             # Close the session
             sess.close()
@@ -442,7 +381,7 @@ def main():
 
     # If cross-validation flag is enabled, store the stuff in a text file
     if args.cross_validate_mode:
-        cross_validate_dump_file = args.log_dir + '/' + 'SPLIT_CIFAR_%s_%s'%(args.imp_method, args.optim) + '.txt'
+        cross_validate_dump_file = args.log_dir + '/' + 'PERMUTE_MNIST_%s_%s'%(args.imp_method, args.optim) + '.txt'
         with open(cross_validate_dump_file, 'a') as f:
             f.write('LR:{} \t LAMBDA: {} \t ACC: {}\n'.format(args.learning_rate, args.synap_stgth, acc_mean[-1,:].mean()))
 

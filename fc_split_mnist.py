@@ -13,7 +13,7 @@ import tensorflow as tf
 from copy import deepcopy
 from six.moves import cPickle as pickle
 
-from utils.data_utils import construct_permute_mnist, construct_split_mnist 
+from utils.data_utils import construct_split_mnist 
 from utils.utils import get_sample_weights, sample_from_dataset, concatenate_datasets, samples_for_each_class, sample_from_dataset_icarl
 from utils.vis_utils import plot_acc_multiple_runs, plot_histogram, snapshot_experiment_meta_data, snapshot_experiment_eval
 from model import Model
@@ -61,6 +61,8 @@ def get_arguments():
       A list of parsed arguments.
     """
     parser = argparse.ArgumentParser(description="Script for split mnist experiment.")
+    parser.add_argument("--cross-validate-mode", action="store_true",
+            help="If option is chosen then enable the cross validation of the learning rate")
     parser.add_argument("--train-single-epoch", action="store_true",
                        help="If option is chosen then train for single epoch")
     parser.add_argument("--eval-single-head", action="store_true",
@@ -93,7 +95,7 @@ def get_arguments():
                        help="Directory where the plots and model accuracies will be stored.")
     return parser.parse_args()
 
-def train_task_sequence(model, sess, datasets, task_labels, train_single_epoch, eval_single_head, do_sampling, 
+def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode, train_single_epoch, eval_single_head, do_sampling, 
         samples_per_class, train_iters, batch_size, num_runs):
     """
     Train and evaluate LLL system such that we only see a example once
@@ -160,6 +162,11 @@ def train_task_sequence(model, sess, datasets, task_labels, train_single_epoch, 
                 # TODO: Use a fix number of batches for now to avoid complicated logic while averaging accuracies
                 #num_iters = num_train_examples// batch_size
                 num_iters = 10000 // batch_size
+                if cross_validate_mode:
+                    if do_sampling:
+                        model.set_active_outputs(sess, test_labels)
+                    else:
+                        model.set_active_outputs(sess, task_labels[task])
             else:
                 num_iters = train_iters
                 # Set the mask only once before starting the training for the task
@@ -181,10 +188,10 @@ def train_task_sequence(model, sess, datasets, task_labels, train_single_epoch, 
             # Training loop for task T
             for iters in range(num_iters):
 
-                if train_single_epoch:
+                if train_single_epoch and not cross_validate_mode:
                     if (iters < 10) or (iters % 50 == 0):
                         # Snapshot the current performance across all tasks after each mini-batch
-                        fbatch = test_task_sequence(model, sess, datasets, task_labels, eval_single_head=eval_single_head)
+                        fbatch = test_task_sequence(model, sess, datasets, task_labels, cross_validate_mode, eval_single_head=eval_single_head)
                         ftask.append(fbatch)
                         # Set the output labels over which the model needs to be trained 
                         if do_sampling:
@@ -272,13 +279,13 @@ def train_task_sequence(model, sess, datasets, task_labels, train_single_epoch, 
 
                     print('\t\t\t\tEpisodic memory is saved for Task%d!'%(task))
 
-            if train_single_epoch: 
-                fbatch = test_task_sequence(model, sess, datasets, task_labels, eval_single_head=eval_single_head)
+            if train_single_epoch and not cross_validate_mode : 
+                fbatch = test_task_sequence(model, sess, datasets, task_labels, cross_validate_mode, eval_single_head=eval_single_head)
                 ftask.append(fbatch)
                 ftask = np.array(ftask)
             else:
                 # List to store accuracy for all the tasks for the current trained model
-                ftask = test_task_sequence(model, sess, datasets, task_labels, eval_single_head=eval_single_head)
+                ftask = test_task_sequence(model, sess, datasets, task_labels, cross_validate_mode, eval_single_head=eval_single_head)
             
             # Store the accuracies computed at task T in a list
             evals.append(ftask)
@@ -295,11 +302,16 @@ def train_task_sequence(model, sess, datasets, task_labels, train_single_epoch, 
 
     return runs
 
-def test_task_sequence(model, sess, test_data, test_tasks, eval_single_head=True):
+def test_task_sequence(model, sess, test_data, test_tasks, cross_validate_mode, eval_single_head=True):
     """
     Snapshot the current performance
     """
     list_acc = []
+
+    if cross_validate_mode:
+        test_set = 'validation'
+    else:
+        test_set = 'test'
 
     if eval_single_head:
         # Single-head evaluation setting
@@ -313,8 +325,8 @@ def test_task_sequence(model, sess, test_data, test_tasks, eval_single_head=True
             # Multi-head evaluation setting
             model.set_active_outputs(sess, labels)
 
-        feed_dict = {model.x: test_data[task]['test']['images'], 
-                model.y_: test_data[task]['test']['labels'], model.keep_prob: 1.0}
+        feed_dict = {model.x: test_data[task][test_set]['images'], 
+                model.y_: test_data[task][test_set]['labels'], model.keep_prob: 1.0}
         acc = model.accuracy.eval(feed_dict = feed_dict)
         list_acc.append(acc)
 
@@ -408,7 +420,7 @@ def main():
         config.gpu_options.allow_growth = True
 
         with tf.Session(config=config, graph=graph) as sess:
-            runs = train_task_sequence(model, sess, datasets, TASK_LABELS, args.train_single_epoch, args.eval_single_head, 
+            runs = train_task_sequence(model, sess, datasets, TASK_LABELS, args.cross_validate_mode, args.train_single_epoch, args.eval_single_head, 
                     args.do_sampling, args.mem_size, args.train_iters, args.batch_size, args.num_runs)
             # Close the session
             sess.close()
@@ -420,11 +432,11 @@ def main():
     # Store all the results in one dictionary to process later
     exper_acc = dict(mean=acc_mean, std=acc_std)
 
-    if args.train_single_epoch:
-        print('A5: {}'.format(acc_mean[-1,-1,:].mean()))
-    else:
-        print(exper_acc)
-        print('A5: {}'.format(acc_mean[-1,:].mean()))
+    # If cross-validation flag is enabled, store the stuff in a text file
+    if args.cross_validate_mode:
+        cross_validate_dump_file = args.log_dir + '/' + 'SPLIT_MNIST_%s_%s'%(args.imp_method, args.optim) + '.txt'
+        with open(cross_validate_dump_file, 'a') as f:
+            f.write('LR:{} \t LAMBDA: {} \t ACC: {}\n'.format(args.learning_rate, args.synap_stgth, acc_mean[-1,:].mean()))
 
     # Store the experiment output to a file
     snapshot_experiment_eval(args.log_dir, experiment_id, exper_acc)
