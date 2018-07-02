@@ -4,7 +4,8 @@ set -e
 
 EXP=$1
 IMP_METHOD='PI'
-SYNAP_STGTH=(0.01 0.1 1 10)
+#SYNAP_STGTH=(0.01 0.1 1 10)
+SYNAP_STGTH=(100 1000 10000)
 BATCH_SIZE=10
 LOG_DIR='../cross_validation_results'
 if [ $EXP = "SPLIT_MNIST" ]; then

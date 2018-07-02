@@ -26,7 +26,8 @@ elif [ $EXP = "PERMUTE_MNIST" ]; then
         done
     done
 elif [ $EXP = "SPLIT_CIFAR" ]; then
-    LR=(0.00001 0.0001 0.001 0.003 0.01 0.03 0.1)
+    #LR=(0.00001 0.0001 0.001 0.003 0.01 0.03 0.1)
+    LR=(0.0002 0.0003 0.0005 0.0007 0.0008)
     for lamda in ${SYNAP_STGTH[@]}
     do
         for lr in ${LR[@]}

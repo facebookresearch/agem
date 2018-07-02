@@ -151,9 +151,15 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
                                                                             datasets[task]['train']['labels'],
                                                                             last_task_x, last_task_y_)
             else:
-                # Extract training images and labels for the current task
-                task_train_images = datasets[task]['train']['images']
-                task_train_labels = datasets[task]['train']['labels']
+                if cross_validate_mode:
+                    # Extract training images and labels for the current task
+                    task_train_images = datasets[task]['train']['images']
+                    task_train_labels = datasets[task]['train']['labels']
+                else:
+                    # If not in the cross validation mode then concatenate the train and validation sets
+                    task_train_images, task_train_labels = concatenate_datasets(datasets[task]['train']['images'], 
+                            datasets[task]['train']['labels'], datasets[task]['validation']['images'], 
+                            datasets[task]['validation']['labels'])
 
             # Test for the tasks that we've seen so far
             test_labels += task_labels[task]
