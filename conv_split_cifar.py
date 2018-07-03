@@ -6,6 +6,7 @@ from __future__ import print_function
 import argparse
 import os
 import sys
+import math
 
 import datetime
 import numpy as np
@@ -269,9 +270,11 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
                     _, _, _, _, loss = sess.run([model.set_tmp_fisher, model.weights_old_ops_grouped, 
                         model.train, model.update_small_omega, model.reg_loss], feed_dict=feed_dict)
 
-
                 if (iters % 100 == 0):
                     print('Step {:d} {:.3f}'.format(iters, loss))
+
+                if (math.isnan(loss)):
+                    break
 
             print('\t\t\t\tTraining for Task%d done!'%(task))
 
@@ -381,7 +384,8 @@ def main():
         os.makedirs(args.log_dir)
 
     # Generate the experiment key and store the meta data in a file
-    exper_meta_data = {'DATASET': 'SPLIT_CIFAR',
+    exper_meta_data = {'ARCH': args.arch,
+            'DATASET': 'SPLIT_CIFAR',
             'NUM_RUNS': args.num_runs,
             'EVAL_SINGLE_HEAD': args.eval_single_head, 
             'TRAIN_SINGLE_EPOCH': args.train_single_epoch, 
@@ -394,7 +398,8 @@ def main():
             'BATCH_SIZE': args.batch_size, 
             'EPS_MEMORY': args.do_sampling, 
             'MEM_SIZE': args.mem_size}
-    experiment_id = "SPLIT_CIFAR_%r_%r_%s_%s_%s_%r_%s-"%(args.eval_single_head, args.train_single_epoch, args.imp_method, str(args.synap_stgth).replace('.', '_'), 
+    experiment_id = "SPLIT_CIFAR_%s_%r_%r_%s_%s_%s_%r_%s-"%(args.arch, args.eval_single_head, args.train_single_epoch, args.imp_method, 
+            str(args.synap_stgth).replace('.', '_'), 
             str(args.batch_size), args.do_sampling, str(args.mem_size)) + datetime.datetime.now().strftime("%y-%m-%d-%H-%M")
     snapshot_experiment_meta_data(args.log_dir, experiment_id, exper_meta_data)
 
@@ -461,7 +466,7 @@ def main():
     if args.cross_validate_mode:
         cross_validate_dump_file = args.log_dir + '/' + 'SPLIT_CIFAR_%s_%s'%(args.imp_method, args.optim) + '.txt'
         with open(cross_validate_dump_file, 'a') as f:
-            f.write('LR:{} \t LAMBDA: {} \t ACC: {}\n'.format(args.learning_rate, args.synap_stgth, acc_mean[-1,:].mean()))
+            f.write('ARCH: {} \t LR:{} \t LAMBDA: {} \t ACC: {}\n'.format(args.arch, args.learning_rate, args.synap_stgth, acc_mean[-1,:].mean()))
 
     # Store the experiment output to a file
     snapshot_experiment_eval(args.log_dir, experiment_id, exper_acc)

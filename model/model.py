@@ -339,6 +339,7 @@ class Model:
         elif imp_method == 'PI':
             reg = tf.add_n([tf.reduce_sum(tf.square(w - w_star) * f) for w, w_star, 
                 f in zip(self.trainable_vars, self.star_vars, self.big_omega_vars)])
+        # TODO: Do we need relu at the last resnet block. iCaRL code does not seem to have the relu here
         elif imp_method == 'MAS':
             reg = tf.add_n([tf.reduce_sum(tf.square(w - w_star) * f) for w, w_star, 
                 f in zip(self.trainable_vars, self.star_vars, self.hebbian_score_vars)])
@@ -711,7 +712,7 @@ class Model:
             num_samples = train_x.shape[0]
             for iters in range(num_samples// batch_size):
                 offset = iters * batch_size
-                sess.run(self.accumulate_hebbian_scores, feed_dict={self.x: train_x[offset:offset+batch_size], self.keep_prob: 1.0})
+                sess.run(self.accumulate_hebbian_scores, feed_dict={self.x: train_x[offset:offset+batch_size], self.keep_prob: 1.0, self.train_phase: False})
 
             # Average the hebbian scores across the training examples
             sess.run(self.average_hebbian_scores, feed_dict={self.train_samples: num_samples})
