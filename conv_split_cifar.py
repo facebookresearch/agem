@@ -33,6 +33,8 @@ VALID_OPTIMS = ['SGD', 'MOMENTUM', 'ADAM']
 OPTIM = 'ADAM'
 OPT_MOMENTUM = 0.9
 OPT_POWER = 0.9
+VALID_ARCHS = ['CNN', 'RESNET']
+ARCH = 'CNN'
 
 ## Model options
 MODELS = ['VAN', 'PI', 'EWC', 'MAS', 'RWALK'] #List of valid models 
@@ -78,6 +80,9 @@ def get_arguments():
             help="If option is chosen then train for single epoch")
     parser.add_argument("--eval-single-head", action="store_true",
             help="If option is chosen then evaluate on a single head setting.")
+    parser.add_argument("--arch", type=str, default=ARCH,
+                        help="Network Architecture for the experiment.\
+                                \n \nSupported values: %s"%(VALID_ARCHS))
     parser.add_argument("--num-runs", type=int, default=NUM_RUNS,
                        help="Total runs/ experiments over which accuracy is averaged.")
     parser.add_argument("--train-iters", type=int, default=TRAIN_ITERS,
@@ -220,7 +225,8 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
 
                 feed_dict = {model.x: train_x[offset:offset+batch_size], model.y_: train_y[offset:offset+batch_size], 
                         model.sample_weights: task_sample_weights[offset:offset+batch_size],
-                        model.training_iters: num_iters, model.train_step: iters, model.keep_prob: 0.5}
+                        model.training_iters: num_iters, model.train_step: iters, model.keep_prob: 0.5, 
+                        model.train_phase: True}
 
                 if model.imp_method == 'VAN':
                     _, loss = sess.run([model.train, model.reg_loss], feed_dict=feed_dict)
@@ -343,7 +349,7 @@ def test_task_sequence(model, sess, test_data, test_tasks, cross_validate_mode, 
             model.set_active_outputs(sess, labels)
 
         feed_dict = {model.x: test_data[task][test_set]['images'], 
-                model.y_: test_data[task][test_set]['labels'], model.keep_prob: 1.0}
+                model.y_: test_data[task][test_set]['labels'], model.keep_prob: 1.0, model.train_phase: False}
         acc = model.accuracy.eval(feed_dict = feed_dict)
         list_acc.append(acc)
 
@@ -356,6 +362,10 @@ def main():
 
     # Get the CL arguments
     args = get_arguments()
+
+    # Check if the network architecture is valid
+    if args.arch not in VALID_ARCHS:
+        raise ValueError("Network architecture %s is not supported!"%(args.arch))
 
     # Check if the method to compute importance is valid
     if args.imp_method not in MODELS:
@@ -411,6 +421,7 @@ def main():
         keep_prob = tf.placeholder(dtype=tf.float32, shape=())
         train_samples = tf.placeholder(dtype=tf.float32, shape=())
         training_iters = tf.placeholder(dtype=tf.float32, shape=())
+        train_phase = tf.placeholder(tf.bool, name='train_phase')
 
         # Define the optimizer
         if args.optim == 'ADAM':
@@ -425,9 +436,9 @@ def main():
             opt = tf.train.MomentumOptimizer(args.learning_rate, OPT_MOMENTUM)
 
         # Create the Model/ contruct the graph
-        model = Model(x, y_, sample_weights, keep_prob, train_samples, training_iters, train_step, 
+        model = Model(x, y_, sample_weights, keep_prob, train_samples, training_iters, train_step, train_phase, 
                 opt, args.imp_method, args.synap_stgth, args.fisher_update_after, args.fisher_ema_decay, 
-                network_arch='CNN')
+                network_arch=args.arch)
 
         # Set up tf session and initialize variables.
         config = tf.ConfigProto()

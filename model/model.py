@@ -7,12 +7,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 from IPython import display
 from utils import clone_variable_list, create_fc_layer, create_conv_layer
+from utils.resnet_utils import _conv, _fc, _bn, _residual_block, _residual_block_first 
 
 PARAM_XI_STEP = 1e-3
 NEG_INF = -1e32
 EPSILON = 1e-32
 
-def weight_variable(shape, init_type='default'):
+def weight_variable(shape, name='fc', init_type='default'):
     """
     Define weight variables
     Args:
@@ -21,15 +22,17 @@ def weight_variable(shape, init_type='default'):
     Returns:
         A tensor of size shape initialized from a random normal
     """
-    #return (tf.Variable(tf.truncated_normal(shape, stddev=0.1), name='weights'))
-    if init_type == 'default':
-        weights = tf.Variable(tf.truncated_normal(shape, stddev=0.1), name='weights')
-    elif init_type == 'zero':
-        weights = tf.Variable(tf.constant(0.1, shape=shape, dtype=np.float32), name='weights')
+    with tf.variable_scope(name):
+        if init_type == 'default':
+            weights = tf.get_variable('weights', shape, tf.float32, initializer=tf.truncated_normal_initializer(stddev=0.1))
+            #weights = tf.Variable(tf.truncated_normal(shape, stddev=0.1), name='weights')
+        elif init_type == 'zero':
+            weights = tf.get_variable('weights', shape, tf.float32, initializer=tf.constant_initializer(0.1))
+            #weights = tf.Variable(tf.constant(0.1, shape=shape, dtype=np.float32), name='weights')
 
     return weights
 
-def bias_variable(shape):
+def bias_variable(shape, name='fc'):
     """
     Define bias variables
     Args:
@@ -38,15 +41,19 @@ def bias_variable(shape):
     Returns:
         A tensor of size shape initialized from a constant
     """
-    return tf.Variable(tf.constant(0.1, shape=shape, dtype=np.float32), name='biases') #TODO: Should we initialize it from 0
+    with tf.variable_scope(name):
+        biases = tf.get_variable('biases', shape, initializer=tf.constant_initializer(0.1))
+
+    return biases
+    #return tf.Variable(tf.constant(0.1, shape=shape, dtype=np.float32), name='biases') #TODO: Should we initialize it from 0
 
 class Model:
     """
     A class defining the model
     """
 
-    def __init__(self, x, y_, sample_weights, keep_prob, train_samples, training_iters, train_step, opt, imp_method, 
-            synap_stgth, fisher_update_after, fisher_ema_decay, network_arch='FC'):
+    def __init__(self, x, y_, sample_weights, keep_prob, train_samples, training_iters, train_step, train_phase, 
+            opt, imp_method, synap_stgth, fisher_update_after, fisher_ema_decay, network_arch='FC'):
         """
         Instantiate the model
         """
@@ -58,6 +65,7 @@ class Model:
         self.train_samples = train_samples
         self.training_iters = training_iters
         self.train_step = train_step
+        self.train_phase = train_phase
         self.imp_method = imp_method
         self.fisher_update_after = fisher_update_after
         self.fisher_ema_decay = fisher_ema_decay
@@ -105,8 +113,11 @@ class Model:
             logits = self.conv_feedforward(self.x, self.weights, self.biases, apply_dropout=True)
             
         elif self.network_arch == 'RESNET':
-            #TODO: Implement ResNet here
-            pass
+            # Same resnet-18 as used in GEM paper 
+            kernels = [3, 3, 3, 3, 3]
+            filters = [20, 20, 40, 80, 160]
+            strides = [1, 0, 2, 2, 2]
+            logits = self.resnet18_conv_feedforward(self.x, kernels, filters, strides)
 
         # Prune the predictions to only include the classes for which
         # the training data is present
@@ -183,8 +194,8 @@ class Model:
         self.trainable_vars = []
 
         for i in range(len(layer_dims)-1):
-            w = weight_variable([layer_dims[i], layer_dims[i+1]])
-            b = bias_variable([layer_dims[i+1]])
+            w = weight_variable([layer_dims[i], layer_dims[i+1]], name='fc_%d'%(i))
+            b = bias_variable([layer_dims[i+1]], name='fc_%d'%(i))
             self.weights.append(w)
             self.biases.append(b)
             self.trainable_vars.append(w)
@@ -213,7 +224,7 @@ class Model:
 
     def conv_variables(self, kernel, depth):
         """
-        Defines variables of a 3xconv-2xFC convolutional network
+        Defines variables of a 5xconv-1xFC convolutional network
         Args:
 
         Returns:
@@ -224,8 +235,8 @@ class Model:
         div_factor = 1
 
         for i in range(len(kernel)):
-            w = weight_variable([kernel[i], kernel[i], depth[i], depth[i+1]])
-            b = bias_variable([depth[i+1]])
+            w = weight_variable([kernel[i], kernel[i], depth[i], depth[i+1]], name='conv_%d'%(i))
+            b = bias_variable([depth[i+1]], name='conv_%d'%(i))
             self.weights.append(w)
             self.biases.append(b)
             self.trainable_vars.append(w)
@@ -236,8 +247,8 @@ class Model:
                 div_factor *= 2
 
         flat_units = (self.image_size // div_factor) * (self.image_size // div_factor) * depth[-1]
-        w = weight_variable([flat_units, self.total_classes])
-        b = bias_variable([self.total_classes])
+        w = weight_variable([flat_units, self.total_classes], name='fc_%d'%(i))
+        b = bias_variable([self.total_classes], name='fc_%d'%(i))
         self.weights.append(w)
         self.biases.append(b)
         self.trainable_vars.append(w)
@@ -274,6 +285,43 @@ class Model:
         h = tf.reshape(h, [-1, shape[1] * shape[2] * shape[3]])
 
         return create_fc_layer(h, weights[-1], biases[-1], apply_relu=False)
+
+    def resnet18_conv_feedforward(self, h, kernels, filters, strides):
+        """
+        Forward pass through a ResNet-18 network
+
+        Returns:
+            Logits of a resnet-18 conv network
+        """
+        self.trainable_vars = []
+
+        # Conv1
+        h = _conv(h, kernels[0], filters[0], strides[0], self.trainable_vars, name='conv_1')
+        h = _bn(h, self.trainable_vars, self.train_phase, name='bn_1')
+        h = tf.nn.relu(h)
+
+        # Conv2_x
+        h = _residual_block(h, self.trainable_vars, self.train_phase, name='conv2_1')
+        h = _residual_block(h, self.trainable_vars, self.train_phase, name='conv2_2')
+
+        # Conv3_x
+        h = _residual_block_first(h, filters[2], strides[2], self.trainable_vars, self.train_phase, name='conv3_1')
+        h = _residual_block(h, self.trainable_vars, self.train_phase, name='conv3_2')
+
+        # Conv4_x
+        h = _residual_block_first(h, filters[3], strides[3], self.trainable_vars, self.train_phase, name='conv4_1')
+        h = _residual_block(h, self.trainable_vars, self.train_phase, name='conv4_2')
+
+        # Conv5_x
+        h = _residual_block_first(h, filters[4], strides[4], self.trainable_vars, self.train_phase, name='conv5_1')
+        h = _residual_block(h, self.trainable_vars, self.train_phase, name='conv5_2')
+
+        # Apply average pooling
+        h = tf.reduce_mean(h, [1, 2])
+
+        logits = _fc(h, self.total_classes, self.trainable_vars, name='fc_1')
+
+        return logits 
 
     def loss_and_gradients(self, imp_method):
         """

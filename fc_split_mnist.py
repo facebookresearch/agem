@@ -203,7 +203,7 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
 
                 feed_dict = {model.x: train_x[offset:offset+batch_size], model.y_: train_y[offset:offset+batch_size], 
                         model.sample_weights: task_sample_weights[offset:offset+batch_size],
-                        model.training_iters: num_iters, model.train_step: iters, model.keep_prob: 1.0}
+                        model.training_iters: num_iters, model.train_step: iters, model.keep_prob: 1.0, model.train_phase: True}
 
                 if model.imp_method == 'VAN':
                     _, loss = sess.run([model.train, model.reg_loss], feed_dict=feed_dict)
@@ -326,7 +326,7 @@ def test_task_sequence(model, sess, test_data, test_tasks, cross_validate_mode, 
             model.set_active_outputs(sess, labels)
 
         feed_dict = {model.x: test_data[task][test_set]['images'], 
-                model.y_: test_data[task][test_set]['labels'], model.keep_prob: 1.0}
+                model.y_: test_data[task][test_set]['labels'], model.keep_prob: 1.0, model.train_phase: False}
         acc = model.accuracy.eval(feed_dict = feed_dict)
         list_acc.append(acc)
 
@@ -397,6 +397,7 @@ def main():
         keep_prob = tf.placeholder(dtype=tf.float32, shape=())
         train_samples = tf.placeholder(dtype=tf.float32, shape=())
         training_iters = tf.placeholder(dtype=tf.float32, shape=())
+        train_phase = tf.placeholder(tf.bool, name='train_phase')
 
         # Define the optimizer
         if args.optim == 'ADAM':
@@ -411,7 +412,7 @@ def main():
             opt = tf.train.MomentumOptimizer(args.learning_rate, OPT_MOMENTUM)
 
         # Create the Model/ contruct the graph
-        model = Model(x, y_, sample_weights, keep_prob, train_samples, training_iters, train_step, 
+        model = Model(x, y_, sample_weights, keep_prob, train_samples, training_iters, train_step, train_phase,
                 opt, args.imp_method, args.synap_stgth, args.fisher_update_after, args.fisher_ema_decay, 
                 network_arch='FC')
 
