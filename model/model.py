@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 from IPython import display
 from utils import clone_variable_list, create_fc_layer, create_conv_layer
 from utils.resnet_utils import _conv, _fc, _bn, _residual_block, _residual_block_first 
+from utils.gem_utils import project2cone2
 
 PARAM_XI_STEP = 1e-3
 NEG_INF = -1e32
@@ -52,15 +53,17 @@ class Model:
     A class defining the model
     """
 
-    def __init__(self, x, y_, sample_weights, keep_prob, train_samples, training_iters, train_step, train_phase, 
+    def __init__(self, num_tasks, x, y_, sample_weights, task_id, keep_prob, train_samples, training_iters, train_step, train_phase, 
             opt, imp_method, synap_stgth, fisher_update_after, fisher_ema_decay, network_arch='FC'):
         """
         Instantiate the model
         """
+        self.num_tasks = num_tasks
         self.x = x
         self.y_ = y_
         self.total_classes = int(self.y_.get_shape()[1])
         self.sample_weights = sample_weights
+        self.task_id = task_id
         self.keep_prob = keep_prob
         self.train_samples = train_samples
         self.training_iters = training_iters
@@ -89,6 +92,7 @@ class Model:
         self.score_vars = []
         self.normalized_fisher_at_minima_vars = []
         self.weights_delta_old_vars = []
+        self.gem_reg_grads = []
 
         # Define an output mask that sets for which classes we want training
         # and prediction
@@ -161,6 +165,8 @@ class Model:
             self.create_pathint_ops()
         elif self.imp_method == 'MAS':
             self.create_hebbian_ops()
+        elif self.imp_method == 'GEM':
+            self.create_gem_ops()
 
         # Create weight save and store ops
         self.weights_store_ops()
@@ -331,7 +337,7 @@ class Model:
 
         Returns:
         """
-        if imp_method == 'VAN':
+        if imp_method == 'VAN' or imp_method == 'GEM':
             reg = 0.0
         elif imp_method == 'EWC':
             reg = tf.add_n([tf.reduce_sum(tf.square(w - w_star) * f) for w, w_star, 
@@ -376,7 +382,7 @@ class Model:
         if self.imp_method == 'VAN':
             # Define a training operation
             self.train = self.opt.apply_gradients(self.reg_gradients_vars)
-        else:
+        elif self.imp_method != 'GEM': # For GEM the train op will be defined later in the create_gem_ops function
             # Get the value of old weights first
             with tf.control_dependencies([self.weights_old_ops_grouped]):
                 # Define a training operation
@@ -416,8 +422,23 @@ class Model:
             self.min_score_vars.append(tf.Variable(tf.zeros(1), dtype=tf.float32, trainable=False))
             self.normalized_score_vars.append(tf.Variable(tf.zeros(self.trainable_vars[v].get_shape()), trainable=False))
             self.normalized_fisher_at_minima_vars.append(tf.Variable(tf.zeros(self.trainable_vars[v].get_shape()), trainable=False, dtype=tf.float32))
-            # List of variables to store hebbian information
-            self.hebbian_score_vars.append(tf.Variable(tf.zeros(self.trainable_vars[v].get_shape()), trainable=False))
+            if self.imp_method == 'MAS':
+                # List of variables to store hebbian information
+                self.hebbian_score_vars.append(tf.Variable(tf.zeros(self.trainable_vars[v].get_shape()), trainable=False))
+            elif self.imp_method == 'GEM': 
+                self.gem_reg_grads.append(tf.Variable(tf.zeros(self.trainable_vars[v].get_shape()), trainable=False))
+
+        if self.imp_method == 'GEM':
+            # Compute the total number of parameters in the network
+            self.param_dims = 0
+            for v in self.trainable_vars:
+                shape = v.get_shape()
+                v_params = 1
+                for dim in shape:
+                    v_params *= dim.value
+                self.param_dims += v_params
+            # Assign a big matrix to store the gradients of all the tasks   
+            self.G = tf.Variable(tf.zeros([self.num_tasks, self.param_dims]))
 
     def get_current_weights(self):
         """
@@ -594,6 +615,39 @@ class Model:
         self.average_hebbian_scores = [tf.assign(omega, omega*(1.0/self.train_samples)) for omega in self.hebbian_score_vars]
         # Reset the hebbian importance variables
         self.reset_hebbian_scores = [tf.assign(omega, tf.zeros_like(omega)) for omega in self.hebbian_score_vars]
+
+    def create_gem_ops(self):
+        """
+        Define operations for Gradients Episodic Memory (GEM) method
+        """
+        self.compute_task_gradients = tf.group([tf.assign(v, grad) for v, grad in zip(self.gem_reg_grads, tf.gradients(self.reg_loss, self.trainable_vars))])
+        with tf.control_dependencies([self.compute_task_gradients]): 
+            flattened_grads = tf.concat([tf.reshape(v, [-1]) for v in self.gem_reg_grads], 0)
+            self.store_task_gradients = tf.assign(self.G[self.task_id], flattened_grads)
+
+        def projectgradients_tfn():
+            return tf.py_func(project2cone2, [self.G[self.task_id], self.G[:self.task_id]], [tf.float32])
+
+        # Check if any of the constraints in GEM is violated. If yes, then solve the QP
+        self.gem_gradient_update = tf.cond(tf.cast(tf.reduce_sum(tf.cast(tf.less(tf.matmul(tf.expand_dims(self.G[self.task_id], axis=0), 
+            tf.transpose(self.G)), 0), tf.int32)) != 0, tf.bool), projectgradients_tfn, lambda: tf.identity(self.G[self.task_id])) 
+
+        # Define ops to store the gradients
+        with tf.control_dependencies([self.gem_gradient_update]):
+            offset = 0
+            store_grad_ops = []
+            for v in self.gem_reg_grads:
+                shape = v.get_shape()
+                v_params = 1
+                for dim in shape:
+                    v_params *= dim.value
+                store_grad_ops.append(tf.assign(v, tf.reshape(self.gem_gradient_update[offset:offset+v_params], shape)))
+                offset += v_params
+            self.store_grads = tf.group(*store_grad_ops)
+
+        # Define training operations for the first and the subsequent tasks
+        self.train_first_task = self.opt.apply_gradients(self.reg_gradients_vars)
+        self.train_subseq_tasks = self.opt.apply_gradients(zip(self.gem_reg_grads, self.trainable_vars))
 
 #################################################################################
 #### External APIs of the class. These will be called/ exposed externally #######

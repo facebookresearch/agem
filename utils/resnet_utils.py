@@ -106,6 +106,7 @@ def _residual_block_first(x, out_channels, strides, trainable_vars, train_phase,
                 shortcut = tf.nn.max_pool(x, [1, strides, strides, 1], [1, strides, strides, 1], 'VALID')
         else:
             shortcut = _conv(x, 1, out_channels, strides, trainable_vars, name="shortcut")
+            shortcut = _bn(shortcut, trainable_vars, train_phase, name="bn_0")
 
         # Residual block
         x = _conv(x, 3, out_channels, strides, trainable_vars, name="conv_1")

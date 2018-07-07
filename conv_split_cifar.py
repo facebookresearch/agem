@@ -38,12 +38,12 @@ VALID_ARCHS = ['CNN', 'RESNET']
 ARCH = 'CNN'
 
 ## Model options
-MODELS = ['VAN', 'PI', 'EWC', 'MAS', 'RWALK'] #List of valid models 
+MODELS = ['VAN', 'PI', 'EWC', 'MAS', 'GEM', 'RWALK'] #List of valid models 
 IMP_METHOD = 'EWC'
 SYNAP_STGTH = 75000
 FISHER_EMA_DECAY = 0.9      # Exponential moving average decay factor for Fisher computation (online Fisher)
 FISHER_UPDATE_AFTER = 50    # Number of training iterations for which the F_{\theta}^t is computed (see Eq. 10 in RWalk paper) 
-MEMORY_SIZE_PER_TASK = 10   # Number of samples per task
+MEMORY_SIZE_PER_TASK = 25   # Number of samples per task
 IMG_HEIGHT = 32
 IMG_WIDTH = 32
 IMG_CHANNELS = 3
@@ -55,18 +55,7 @@ LOG_DIR = './split_cifar_results'
 ## Evaluation options
 
 ## Task split
-"""
-TASK_LABELS = [[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19, 
-        20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39, 
-        40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,
-        60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79, 
-        80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99]]
-"""
-TASK_LABELS = [[0,1,2,3,4,5,6,7,8,9], [10,11,12,13,14,15,16,17,18,19], 
-        [20,21,22,23,24,25,26,27,28,29], [30,31,32,33,34,35,36,37,38,39], 
-        [40,41,42,43,44,45,46,47,48,49], [50,51,52,53,54,55,56,57,58,59],
-        [60,61,62,63,64,65,66,67,68,69], [70,71,72,73,74,75,76,77,78,79], 
-        [80,81,82,83,84,85,86,87,88,89], [90,91,92,93,94,95,96,97,98,99]]
+NUM_TASKS = 20
 
 def get_arguments():
     """Parse all the arguments provided from the CLI.
@@ -139,9 +128,14 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
         # List to store the classes that we have so far - used at test time
         test_labels = []
 
-        # List to store important samples from the previous tasks
-        last_task_x = None
-        last_task_y_ = None
+        if model.imp_method == 'GEM':
+            # List to store the episodic memories of the previous tasks
+            task_based_memory = []
+
+        if do_sampling:
+            # List to store important samples from the previous tasks
+            last_task_x = None
+            last_task_y_ = None
 
         # Training loop for all the tasks
         for task in range(len(datasets)):
@@ -184,7 +178,6 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
             if train_single_epoch:
                 # TODO: Use a fix number of batches for now to avoid complicated logic while averaging accuracies
                 num_iters = num_train_examples// batch_size
-                #num_iters = 5000 // batch_size
                 if cross_validate_mode:
                     if do_sampling:
                         model.set_active_outputs(sess, test_labels)
@@ -250,6 +243,28 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
                 elif model.imp_method == 'MAS':
                     _, loss = sess.run([model.train, model.reg_loss], feed_dict=feed_dict)
 
+                elif model.imp_method == 'GEM':
+                    if task == 0:
+                        # Normal application of gradients
+                        _, loss = sess.run([model.train_first_task, model.reg_loss], feed_dict=feed_dict)
+                    else:
+                        # Compute the gradients on the episodic memory of all the previous tasks
+                        for prev_task in range(task):
+                            # T-th task gradients
+                            # Note that the model.train_phase flag is false to avoid updating the batch norm params while doing forward pass on prev tasks
+                            model.set_active_outputs(sess, task_labels[prev_task])
+                            sess.run([model.compute_task_gradients, model.store_task_gradients], feed_dict={model.x: task_based_memory[prev_task]['images'], 
+                                model.y_: task_based_memory[prev_task]['labels'], model.task_id: prev_task, model.keep_prob: 1.0, model.train_phase: False})
+
+                        # Compute the gradient on the mini-batch of the current task
+                        model.set_active_outputs(sess, task_labels[task])
+                        feed_dict[model.task_id] = task
+                        _, _,loss = sess.run([model.compute_task_gradients, model.store_task_gradients, model.reg_loss], feed_dict=feed_dict)
+                        # Store the gradients
+                        sess.run([model.gem_gradient_update, model.store_grads], feed_dict={model.task_id: task})
+                        # Apply the gradients
+                        sess.run(model.train_subseq_tasks)
+
                 elif model.imp_method == 'RWALK':
                     # If first iteration of the first task then set the initial value of the running fisher
                     if task == 0 and iters == 0:
@@ -274,7 +289,8 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
                     print('Step {:d} {:.3f}'.format(iters, loss))
 
                 if (math.isnan(loss)):
-                    break
+                    print('ERROR: NaNs NaNs NaNs!!!')
+                    sys.exit(0)
 
             print('\t\t\t\tTraining for Task%d done!'%(task))
 
@@ -284,6 +300,19 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
                 model.task_updates(sess, task, task_train_images)
                 print('\t\t\t\tTask updates after Task%d done!'%(task))
 
+                # If importance method is 'GEM' then store the episodic memory for the task
+                if model.imp_method == 'GEM':
+                    # Do the uniform sampling/ only get examples from current task
+                    importance_array = np.ones([datasets[task]['train']['images'].shape[0]], dtype=np.float32)
+                    # Get the important samples from the current task
+                    imp_images, imp_labels = sample_from_dataset(datasets[task]['train'], importance_array, 
+                            task_labels[task], samples_per_class)
+                    task_memory = {
+                            'images': deepcopy(imp_images),
+                            'labels': deepcopy(imp_labels),
+                            }
+                    task_based_memory.append(task_memory)
+                    
                 # If sampling flag is set, store few of the samples from previous task
                 if do_sampling:
                     # Do the uniform sampling/ only get examples from current task
@@ -403,8 +432,16 @@ def main():
             str(args.batch_size), args.do_sampling, str(args.mem_size)) + datetime.datetime.now().strftime("%y-%m-%d-%H-%M")
     snapshot_experiment_meta_data(args.log_dir, experiment_id, exper_meta_data)
 
+    # Get the task labels from the total number of tasks and full label space
+    task_labels = []
+    label_array = np.arange(TOTAL_CLASSES)
+    for i in range(NUM_TASKS):
+        jmp = TOTAL_CLASSES// NUM_TASKS
+        offset = i*jmp
+        task_labels.append(list(label_array[offset:offset+jmp]))
+
     # Load the split cifar dataset
-    datasets = construct_split_cifar(TASK_LABELS)
+    datasets = construct_split_cifar(task_labels)
 
     # Variables to store the accuracies and standard deviations of the experiment
     acc_mean = dict()
@@ -427,6 +464,7 @@ def main():
         train_samples = tf.placeholder(dtype=tf.float32, shape=())
         training_iters = tf.placeholder(dtype=tf.float32, shape=())
         train_phase = tf.placeholder(tf.bool, name='train_phase')
+        task_id = tf.placeholder(dtype=tf.int32, shape=())
 
         # Define the optimizer
         if args.optim == 'ADAM':
@@ -441,7 +479,7 @@ def main():
             opt = tf.train.MomentumOptimizer(args.learning_rate, OPT_MOMENTUM)
 
         # Create the Model/ contruct the graph
-        model = Model(x, y_, sample_weights, keep_prob, train_samples, training_iters, train_step, train_phase, 
+        model = Model(NUM_TASKS, x, y_, sample_weights, task_id, keep_prob, train_samples, training_iters, train_step, train_phase, 
                 opt, args.imp_method, args.synap_stgth, args.fisher_update_after, args.fisher_ema_decay, 
                 network_arch=args.arch)
 
@@ -450,7 +488,7 @@ def main():
         config.gpu_options.allow_growth = True
 
         with tf.Session(config=config, graph=graph) as sess:
-            runs = train_task_sequence(model, sess, datasets, TASK_LABELS, args.cross_validate_mode, args.train_single_epoch, args.eval_single_head, 
+            runs = train_task_sequence(model, sess, datasets, task_labels, args.cross_validate_mode, args.train_single_epoch, args.eval_single_head, 
                     args.do_sampling, args.mem_size, args.train_iters, args.batch_size, args.num_runs)
             # Close the session
             sess.close()
