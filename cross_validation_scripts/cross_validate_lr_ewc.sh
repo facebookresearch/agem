@@ -4,9 +4,9 @@ set -e
 
 EXP=$1
 IMP_METHOD='EWC'
-SYNAP_STGTH=(1 10 1000 10000)
+SYNAP_STGTH=(1 10 1000 10000 100000)
 BATCH_SIZE=10
-LOG_DIR='../cross_validation_results'
+LOG_DIR='../cross_validation_results_20tasks'
 OPTIM='SGD'
 ARCH='RESNET'
 if [ $EXP = "SPLIT_MNIST" ]; then

@@ -6,7 +6,7 @@ EXP=$1
 IMP_METHOD='RWALK'
 SYNAP_STGTH=(0.1 1 10 100 1000 10000)
 BATCH_SIZE=10
-LOG_DIR='../cross_validation_results'
+LOG_DIR='../cross_validation_results_20tasks'
 ARCH='RESNET'
 OPTIM='SGD'
 if [ $EXP = "SPLIT_MNIST" ]; then
@@ -28,7 +28,7 @@ elif [ $EXP = "PERMUTE_MNIST" ]; then
         done
     done
 elif [ $EXP = "SPLIT_CIFAR" ]; then
-    LR=(0.001 0.003 0.01 0.03 0.1 1.0) 
+    LR=(0.001 0.003 0.01 0.03 0.1 0.3 1.0) 
     for lamda in ${SYNAP_STGTH[@]}
     do
         for lr in ${LR[@]}
