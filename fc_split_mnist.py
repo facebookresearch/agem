@@ -129,6 +129,8 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
             last_task_x = None
             last_task_y_ = None
 
+        # Mask for softmax
+        logit_mask = np.zeros(TOTAL_CLASSES)
         # Training loop for all the tasks
         for task in range(len(datasets)):
             print('\t\tTask %d:'%(task))
@@ -160,6 +162,7 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
 
             num_train_examples = task_train_images.shape[0]
 
+            logit_mask[:] = 0
             # Train a task observing sequence of data
             if train_single_epoch:
                 # TODO: Use a fix number of batches for now to avoid complicated logic while averaging accuracies
@@ -167,16 +170,16 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
                 num_iters = 10000 // batch_size
                 if cross_validate_mode:
                     if do_sampling:
-                        model.set_active_outputs(sess, test_labels)
+                        logit_mask[test_labels] = 1.0
                     else:
-                        model.set_active_outputs(sess, task_labels[task])
+                        logit_mask[task_labels[task]] = 1.0
             else:
                 num_iters = train_iters
                 # Set the mask only once before starting the training for the task
                 if do_sampling:
-                    model.set_active_outputs(sess, test_labels)
+                    logit_mask[test_labels] = 1.0
                 else:
-                    model.set_active_outputs(sess, task_labels[task])
+                    logit_mask[task_labels[task]] = 1.0
 
             # Randomly suffle the training examples
             perm = np.arange(num_train_examples)
@@ -197,21 +200,25 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
                         fbatch = test_task_sequence(model, sess, datasets, task_labels, cross_validate_mode, eval_single_head=eval_single_head)
                         ftask.append(fbatch)
                         # Set the output labels over which the model needs to be trained 
+                        logit_mask[:] = 0
                         if do_sampling:
-                            model.set_active_outputs(sess, test_labels)
+                            logit_mask[test_labels] = 1.0
                         else:
-                            model.set_active_outputs(sess, task_labels[task])
+                            logit_mask[task_labels[task]] = 1.0
 
                 offset = (iters * batch_size) % (num_train_examples - batch_size)
 
                 feed_dict = {model.x: train_x[offset:offset+batch_size], model.y_: train_y[offset:offset+batch_size], 
                         model.sample_weights: task_sample_weights[offset:offset+batch_size],
-                        model.training_iters: num_iters, model.train_step: iters, model.keep_prob: 1.0, model.train_phase: True}
+                        model.training_iters: num_iters, model.train_step: iters, model.keep_prob: 1.0, 
+                        model.train_phase: True}
 
                 if model.imp_method == 'VAN':
+                    feed_dict[model.output_mask] = logit_mask
                     _, loss = sess.run([model.train, model.reg_loss], feed_dict=feed_dict)
 
                 elif model.imp_method == 'EWC':
+                    feed_dict[model.output_mask] = logit_mask
                     # If first iteration of the first task then set the initial value of the running fisher
                     if task == 0 and iters == 0:
                         sess.run([model.set_initial_running_fisher], feed_dict=feed_dict)
@@ -223,14 +230,19 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
                     _, _, loss = sess.run([model.set_tmp_fisher, model.train, model.reg_loss], feed_dict=feed_dict)
 
                 elif model.imp_method == 'PI':
+                    feed_dict[model.output_mask] = logit_mask
                     _, _, _, loss = sess.run([model.weights_old_ops_grouped, model.train, model.update_small_omega, 
                                               model.reg_loss], feed_dict=feed_dict)
 
                 elif model.imp_method == 'MAS':
+                    feed_dict[model.output_mask] = logit_mask
                     _, loss = sess.run([model.train, model.reg_loss], feed_dict=feed_dict)
 
                 elif model.imp_method == 'GEM':
                     if task == 0:
+                        logit_mask[:] = 0
+                        logit_mask[task_labels[task]] = 1.0
+                        feed_dict[model.output_mask] = logit_mask
                         # Normal application of gradients
                         _, loss = sess.run([model.train_first_task, model.reg_loss], feed_dict=feed_dict)
                     else:
@@ -238,12 +250,16 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
                         for prev_task in range(task):
                             # T-th task gradients
                             # Note that the model.train_phase flag is false to avoid updating the batch norm params while doing forward pass on prev tasks
-                            model.set_active_outputs(sess, task_labels[prev_task])
+                            logit_mask[:] = 0
+                            logit_mask[task_labels[prev_task]] = 1.0
                             sess.run([model.compute_task_gradients, model.store_task_gradients], feed_dict={model.x: task_based_memory[prev_task]['images'],
-                                model.y_: task_based_memory[prev_task]['labels'], model.task_id: prev_task, model.keep_prob: 1.0, model.train_phase: False})
+                                model.y_: task_based_memory[prev_task]['labels'], model.task_id: prev_task, model.keep_prob: 1.0, 
+                                model.output_mask: logit_mask, model.train_phase: False})
 
                         # Compute the gradient on the mini-batch of the current task
-                        model.set_active_outputs(sess, task_labels[task])
+                        logit_mask[:] = 0
+                        logit_mask[task_labels[task]] = 1.0
+                        feed_dict[model.output_mask] = logit_mask
                         feed_dict[model.task_id] = task
                         _, _,loss = sess.run([model.compute_task_gradients, model.store_task_gradients, model.reg_loss], feed_dict=feed_dict)
                         # Store the gradients
@@ -252,6 +268,7 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
                         sess.run(model.train_subseq_tasks)
 
                 elif model.imp_method == 'RWALK':
+                    feed_dict[model.output_mask] = logit_mask
                     # If first iteration of the first task then set the initial value of the running fisher
                     if task == 0 and iters == 0:
                         sess.run([model.set_initial_running_fisher], feed_dict=feed_dict)
@@ -280,7 +297,7 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
             # Compute the inter-task updates, Fisher/ importance scores etc
             # Don't calculate the task updates for the last task
             if task < len(datasets) - 1:
-                model.task_updates(sess, task, task_train_images)
+                model.task_updates(sess, task, task_train_images, task_labels[task])
                 print('\t\t\t\tTask updates after Task%d done!'%(task))
 
                 # If importance method is 'GEM' then store the episodic memory for the task
@@ -353,18 +370,17 @@ def test_task_sequence(model, sess, test_data, test_tasks, cross_validate_mode, 
 
     if eval_single_head:
         # Single-head evaluation setting
-        classes_to_distinguish = []
-        for task in test_tasks:
-            classes_to_distinguish += task
-        model.set_active_outputs(sess, classes_to_distinguish)
+        logit_mask = np.ones(TOTAL_CLASSES)
 
+    logit_mask = np.zeros(TOTAL_CLASSES)
     for task, labels in enumerate(test_tasks):
         if not eval_single_head:
             # Multi-head evaluation setting
-            model.set_active_outputs(sess, labels)
+            logit_mask[:] = 0
+            logit_mask[labels] = 1.0
 
         feed_dict = {model.x: test_data[task][test_set]['images'], 
-                model.y_: test_data[task][test_set]['labels'], model.keep_prob: 1.0, model.train_phase: False}
+                model.y_: test_data[task][test_set]['labels'], model.keep_prob: 1.0, model.train_phase: False, model.output_mask: logit_mask}
         acc = model.accuracy.eval(feed_dict = feed_dict)
         list_acc.append(acc)
 
@@ -438,13 +454,6 @@ def main():
         # Define Input and Output of the model
         x = tf.placeholder(tf.float32, shape=[None, INPUT_FEATURE_SIZE])
         y_ = tf.placeholder(tf.float32, shape=[None, TOTAL_CLASSES])
-        sample_weights = tf.placeholder(tf.float32, shape=[None])
-        train_step = tf.placeholder(dtype=tf.float32, shape=())
-        keep_prob = tf.placeholder(dtype=tf.float32, shape=())
-        train_samples = tf.placeholder(dtype=tf.float32, shape=())
-        training_iters = tf.placeholder(dtype=tf.float32, shape=())
-        train_phase = tf.placeholder(tf.bool, name='train_phase')
-        task_id = tf.placeholder(dtype=tf.int32, shape=())
 
         # Define the optimizer
         if args.optim == 'ADAM':
@@ -459,9 +468,8 @@ def main():
             opt = tf.train.MomentumOptimizer(args.learning_rate, OPT_MOMENTUM)
 
         # Create the Model/ contruct the graph
-        model = Model(NUM_TASKS, x, y_, sample_weights, task_id, keep_prob, train_samples, training_iters, train_step, train_phase,
-                opt, args.imp_method, args.synap_stgth, args.fisher_update_after, args.fisher_ema_decay, 
-                network_arch='FC')
+        model = Model(x, y_, NUM_TASKS, opt, args.imp_method, args.synap_stgth, args.fisher_update_after, 
+                args.fisher_ema_decay, network_arch='FC')
 
         # Set up tf session and initialize variables.
         config = tf.ConfigProto()

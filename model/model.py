@@ -53,26 +53,32 @@ class Model:
     A class defining the model
     """
 
-    def __init__(self, num_tasks, x, y_, sample_weights, task_id, keep_prob, train_samples, training_iters, train_step, train_phase, 
-            opt, imp_method, synap_stgth, fisher_update_after, fisher_ema_decay, network_arch='FC'):
+    def __init__(self, x, y_, num_tasks, opt, imp_method, synap_stgth, fisher_update_after, fisher_ema_decay, network_arch='FC'):
         """
         Instantiate the model
         """
-        self.num_tasks = num_tasks
+        # Define some placeholders which are used to feed the data to the model
         self.x = x
         self.y_ = y_
         self.total_classes = int(self.y_.get_shape()[1])
-        self.sample_weights = sample_weights
-        self.task_id = task_id
-        self.keep_prob = keep_prob
-        self.train_samples = train_samples
-        self.training_iters = training_iters
-        self.train_step = train_step
-        self.train_phase = train_phase
+        self.sample_weights = tf.placeholder(tf.float32, shape=[None])
+        self.task_id = tf.placeholder(dtype=tf.int32, shape=())
+        self.keep_prob = tf.placeholder(dtype=tf.float32, shape=())
+        self.train_samples = tf.placeholder(dtype=tf.float32, shape=())
+        self.training_iters = tf.placeholder(dtype=tf.float32, shape=())
+        self.train_step = tf.placeholder(dtype=tf.float32, shape=())
+        self.train_phase = tf.placeholder(tf.bool, name='train_phase')
+
+        # Save the arguments passed from the main script
+        self.opt = opt
+        self.num_tasks = num_tasks
         self.imp_method = imp_method
         self.fisher_update_after = fisher_update_after
         self.fisher_ema_decay = fisher_ema_decay
         self.network_arch = network_arch
+
+        # A scalar variable for previous syanpse strength
+        self.synap_stgth = tf.constant(synap_stgth, shape=[1], dtype=tf.float32)
 
         # Define different variables
         self.weights_old = []
@@ -96,10 +102,7 @@ class Model:
 
         # Define an output mask that sets for which classes we want training
         # and prediction
-        self.output_mask = tf.Variable(tf.zeros(self.total_classes), trainable=False)
-
-        # A scalar variable for previous syanpse strength
-        self.synap_stgth = tf.constant(synap_stgth, shape=[1], dtype=tf.float32)
+        self.output_mask = tf.placeholder(dtype=tf.float32, shape=[self.total_classes])
 
         # Define approproate network
         if self.network_arch == 'FC':
@@ -127,9 +130,6 @@ class Model:
         # the training data is present
         self.pruned_logits = tf.where(tf.tile(tf.equal(self.output_mask[None,:], 1.0), 
             [tf.shape(logits)[0], 1]), logits, NEG_INF*tf.ones_like(logits))
-
-        # Save the optimizer 
-        self.opt = opt
 
         # Create list of variables for storing different measures
         # Note: This method has to be called before calculating fisher 
@@ -674,10 +674,11 @@ class Model:
         Returns:
         """
         new_mask = np.zeros(self.total_classes)
-
+        new_mask[labels] = 1.0
+        """
         for l in labels:
             new_mask[l] = 1.0
-
+        """
         sess.run(self.output_mask.assign(new_mask))
 
     def set_logits_weights(self, sess, labels, logits_weighting):
@@ -701,13 +702,14 @@ class Model:
         # big_omegas reliably
         sess.run(self.set_star_vars)
 
-    def task_updates(self, sess, task, train_x):
+    def task_updates(self, sess, task, train_x, train_labels):
         """
         Updates different variables when a task is completed
         Args:
             sess                TF session
             task                Task ID
             train_x             Training images for the task 
+            train_labels        Labels in the task 
         Returns:
         """
         if self.imp_method == 'VAN':
@@ -761,12 +763,16 @@ class Model:
         elif self.imp_method == 'MAS':
             # zero out any previous values
             sess.run(self.reset_hebbian_scores)
+            # Logits mask
+            logit_mask = np.zeros(self.total_classes)
+            logit_mask[train_labels] = 1.0
             # Loop over the entire training dataset to compute the parameter importance
             batch_size = 100
             num_samples = train_x.shape[0]
             for iters in range(num_samples// batch_size):
                 offset = iters * batch_size
-                sess.run(self.accumulate_hebbian_scores, feed_dict={self.x: train_x[offset:offset+batch_size], self.keep_prob: 1.0, self.train_phase: False})
+                sess.run(self.accumulate_hebbian_scores, feed_dict={self.x: train_x[offset:offset+batch_size], self.keep_prob: 1.0, 
+                    self.output_mask: logit_mask, self.train_phase: False})
 
             # Average the hebbian scores across the training examples
             sess.run(self.average_hebbian_scores, feed_dict={self.train_samples: num_samples})
