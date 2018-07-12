@@ -620,17 +620,18 @@ class Model:
         """
         Define operations for Gradients Episodic Memory (GEM) method
         """
-        self.compute_task_gradients = tf.group([tf.assign(v, grad) for v, grad in zip(self.gem_reg_grads, tf.gradients(self.reg_loss, self.trainable_vars))])
-        with tf.control_dependencies([self.compute_task_gradients]): 
-            flattened_grads = tf.concat([tf.reshape(v, [-1]) for v in self.gem_reg_grads], 0)
-            self.store_task_gradients = tf.assign(self.G[self.task_id], flattened_grads)
+        # Compute the gradients for a given task id
+        self.task_grads = tf.gradients(self.reg_loss, self.trainable_vars)
+   
+        with tf.control_dependencies(self.task_grads): 
+            self.store_task_gradients = tf.assign(self.G[self.task_id], tf.concat([tf.reshape(grad, [-1]) for grad in self.task_grads], 0))
 
         def projectgradients_tfn():
             return tf.py_func(project2cone2, [self.G[self.task_id], self.G[:self.task_id]], [tf.float32])
 
         # Check if any of the constraints in GEM is violated. If yes, then solve the QP
-        self.gem_gradient_update = tf.cond(tf.cast(tf.reduce_sum(tf.cast(tf.less(tf.matmul(tf.expand_dims(self.G[self.task_id], axis=0), 
-            tf.transpose(self.G)), 0), tf.int32)) != 0, tf.bool), projectgradients_tfn, lambda: tf.identity(self.G[self.task_id])) 
+        self.gem_gradient_update = tf.cond(tf.equal(tf.reduce_sum(tf.cast(tf.less(tf.matmul(tf.expand_dims(self.G[self.task_id], axis=0), 
+            tf.transpose(self.G)), 0), tf.int32)), 0), lambda: tf.identity(self.G[self.task_id]), projectgradients_tfn) 
 
         # Define ops to store the gradients
         with tf.control_dependencies([self.gem_gradient_update]):

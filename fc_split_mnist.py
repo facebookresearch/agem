@@ -252,7 +252,7 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
                             # Note that the model.train_phase flag is false to avoid updating the batch norm params while doing forward pass on prev tasks
                             logit_mask[:] = 0
                             logit_mask[task_labels[prev_task]] = 1.0
-                            sess.run([model.compute_task_gradients, model.store_task_gradients], feed_dict={model.x: task_based_memory[prev_task]['images'],
+                            sess.run([model.task_grads, model.store_task_gradients], feed_dict={model.x: task_based_memory[prev_task]['images'],
                                 model.y_: task_based_memory[prev_task]['labels'], model.task_id: prev_task, model.keep_prob: 1.0, 
                                 model.output_mask: logit_mask, model.train_phase: False})
 
@@ -261,7 +261,7 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
                         logit_mask[task_labels[task]] = 1.0
                         feed_dict[model.output_mask] = logit_mask
                         feed_dict[model.task_id] = task
-                        _, _,loss = sess.run([model.compute_task_gradients, model.store_task_gradients, model.reg_loss], feed_dict=feed_dict)
+                        _, _,loss = sess.run([model.task_grads, model.store_task_gradients, model.reg_loss], feed_dict=feed_dict)
                         # Store the gradients
                         sess.run([model.gem_gradient_update, model.store_grads], feed_dict={model.task_id: task})
                         # Apply the gradients

@@ -40,7 +40,7 @@ IMP_METHOD = 'EWC'
 SYNAP_STGTH = 75000
 FISHER_EMA_DECAY = 0.9      # Exponential moving average decay factor for Fisher computation (online Fisher)
 FISHER_UPDATE_AFTER = 10    # Number of training iterations for which the F_{\theta}^t is computed (see Eq. 10 in RWalk paper) 
-MEMORY_SIZE_PER_TASK = 10   # Number of samples per task
+MEMORY_SIZE_PER_TASK = 25   # Number of samples per task
 INPUT_FEATURE_SIZE = 784
 TOTAL_CLASSES = 10          # Total number of classes in the dataset 
 
@@ -163,7 +163,8 @@ def train_task_sequence(model, sess, datasets, cross_validate_mode, train_single
 
             # Train a task observing sequence of data
             if train_single_epoch:
-                num_iters = num_train_examples // batch_size
+                num_iters = 20
+                #num_iters = num_train_examples // batch_size
             else:
                 num_iters = train_iters
 
@@ -223,13 +224,13 @@ def train_task_sequence(model, sess, datasets, cross_validate_mode, train_single
                         for prev_task in range(task):
                             # T-th task gradients.
                             # Note that the model.train_phase flag is false to avoid updating the batch norm params while doing forward pass on prev tasks
-                            sess.run([model.compute_task_gradients, model.store_task_gradients], feed_dict={model.x: task_based_memory[prev_task]['images'],
+                            sess.run([model.task_grads, model.store_task_gradients], feed_dict={model.x: task_based_memory[prev_task]['images'],
                                 model.y_: task_based_memory[prev_task]['labels'], model.task_id: prev_task, model.keep_prob: 1.0, 
                                 model.output_mask: logit_mask, model.train_phase: False})
 
                         # Compute the gradient on the mini-batch of the current task
                         feed_dict[model.task_id] = task
-                        _, _,loss = sess.run([model.compute_task_gradients, model.store_task_gradients, model.reg_loss], feed_dict=feed_dict)
+                        _, _,loss = sess.run([model.task_grads, model.store_task_gradients, model.reg_loss], feed_dict=feed_dict)
                         # Store the gradients
                         sess.run([model.gem_gradient_update, model.store_grads], feed_dict={model.task_id: task})
                         # Apply the gradients
