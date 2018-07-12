@@ -1,0 +1,9 @@
+Repository for the Fast Lifelong Learning Project. 
+
+The repo contains the code for the model:
+1) Vanilla (VAN)
+2) Elastic Weight Consolidation (EWC)
+3) Path Integration-based Synaptin Intelligence (PI)
+4) Gradient Episodic Memory (GEM) -> implementation not fully-tested
+5) Memory Aware Synapses (MAS)
+6) Riemannian Walk (RWALK)
