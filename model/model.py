@@ -53,7 +53,7 @@ class Model:
     A class defining the model
     """
 
-    def __init__(self, x, y_, num_tasks, opt, imp_method, synap_stgth, fisher_update_after, fisher_ema_decay, network_arch='FC'):
+    def __init__(self, x, y_, num_tasks, opt, imp_method, synap_stgth, fisher_update_after, fisher_ema_decay, network_arch='FC',is_CUB=False):
         """
         Instantiate the model
         """
@@ -68,6 +68,7 @@ class Model:
         self.training_iters = tf.placeholder(dtype=tf.float32, shape=())
         self.train_step = tf.placeholder(dtype=tf.float32, shape=())
         self.train_phase = tf.placeholder(tf.bool, name='train_phase')
+        self.is_CUB = is_CUB # To use a different (standard one) ResNet-18 for CUB
 
         # Save the arguments passed from the main script
         self.opt = opt
@@ -120,10 +121,16 @@ class Model:
             logits = self.conv_feedforward(self.x, self.weights, self.biases, apply_dropout=True)
             
         elif self.network_arch == 'RESNET':
-            # Same resnet-18 as used in GEM paper 
-            kernels = [3, 3, 3, 3, 3]
-            filters = [20, 20, 40, 80, 160]
-            strides = [1, 0, 2, 2, 2]
+            if self.is_CUB:
+                # Standard ResNet-18
+                kernels = [7, 3, 3, 3, 3]
+                filters = [64, 64, 128, 256, 512]
+                strides = [2, 0, 2, 2, 2]
+            else:
+                # Same resnet-18 as used in GEM paper
+                kernels = [3, 3, 3, 3, 3]
+                filters = [20, 20, 40, 80, 160]
+                strides = [1, 0, 2, 2, 2]
             logits = self.resnet18_conv_feedforward(self.x, kernels, filters, strides)
 
         # Prune the predictions to only include the classes for which

@@ -13,7 +13,163 @@ from six.moves.urllib.request import urlretrieve
 from six.moves import cPickle as pickle
 import tarfile
 import zipfile
+import cv2
 
+############################################################
+### CUB dataset utils #####################################
+############################################################
+def _CUB_read_img_from_file(data_dir, file_name, img_height, img_width):
+    count = 0
+    imgs = []
+    labels = []
+
+    def dense_to_one_hot(labels_dense, num_classes=200):
+        num_labels = labels_dense.shape[0]
+        index_offset = np.arange(num_labels) * num_classes
+        labels_one_hot = np.zeros((num_labels, num_classes))
+        labels_one_hot.flat[index_offset + labels_dense.ravel()] = 1
+
+        return labels_one_hot
+
+    with open(file_name) as f:
+        for line in f:
+            img_name, img_label = line.split()
+            img_file = data_dir.rstrip('\/') + '/' + img_name
+            img = cv2.imread(img_file).astype(np.float32)
+            # HWC -> WHC, compatible with caffe weights
+            img = np.transpose(img, [1, 0, 2])
+            img = cv2.resize(img, (img_width, img_height))
+
+            #imgs += [np.expand_dims(img, axis=0)]
+            imgs += [img]
+            labels += [int(img_label)]
+            count += 1
+
+            if count % 1000 == 0:
+                print 'Finish reading {:07d}'.format(count)
+
+    # Convert the labels to one-hot
+    y = dense_to_one_hot(np.array(labels))
+
+    return np.array(imgs), y
+
+
+def _CUB_get_data(data_dir, train_list_file, test_list_file):
+    """ Reads and parses examples from CUB dataset """
+
+    dataset = dict()
+    dataset['train'] = []
+    dataset['test'] = []
+
+    img_height = 227
+    img_width = 227
+    num_val_img = 0   # you can change the number of validation images here
+
+    train_img = []
+    train_label = []
+    test_img = []
+    test_label = []
+
+    # Read train and test files
+    train_img, train_label = _CUB_read_img_from_file(data_dir, train_list_file, img_height, img_width)
+    test_img, test_label = _CUB_read_img_from_file(data_dir, test_list_file, img_height, img_width)
+
+    """
+    train_img = np.concatenate(train_img)
+    test_img = np.concatenate(test_img)
+    train_label = np.array(train_label)
+    test_label = np.array(test_label)
+    """
+    
+    """
+    # Randomize the split
+    num_train_img = train_img.shape[0] - num_val_img
+    idx_rand = np.random.permutation(train_img.shape[0])
+    print(num_train_img)
+    train_img_new = train_img[idx_rand[:num_train_img], :, :, :]
+    #val_img = train_img[idx_rand[num_train_img:], :, :, :]
+    train_label_new = train_label[idx_rand[:num_train_img]]
+    #val_label = train_label[idx_rand[num_train_img:]]
+	"""
+
+
+    # Compute the mean
+    mean_img = np.mean(np.concatenate([train_img, test_img]), axis=0)
+    #mean_img = np.mean(np.concatenate([train_img_new, test_img]), axis=0)
+
+    # Subtract the mean
+    train_img -= mean_img
+    #train_img_new -= mean_img
+    test_img -= mean_img
+
+    dataset['train'].append(train_img)
+    dataset['train'].append(train_label)
+    #dataset['train'].append(train_img_new)
+    #dataset['train'].append(train_label_new)
+    dataset['test'].append(test_img)
+    dataset['test'].append(test_label)
+    return dataset
+
+
+def construct_split_cub(task_labels, data_dir, train_list_file, test_list_file):
+    """
+    Construct Split CUB-200 dataset
+
+    Args:
+        task_labels         Labels of different tasks
+        data_dir            Data directory from where the CUB-200 dataset will be read
+        train_list_file     File containing names of training images
+        test_list_file      File containing names of test images
+    """
+
+    # Get the cub dataset
+    cub_data = _CUB_get_data(data_dir, train_list_file, test_list_file)
+
+    # Define a list for storing the data for different tasks
+    datasets = []
+
+    # Data splits
+    sets = ["train", "test"]
+
+    for task in task_labels:
+
+        for set_name in sets:
+            this_set = cub_data[set_name]
+
+            global_class_indices = np.column_stack(np.nonzero(this_set[1]))
+            count = 0
+
+            for cls in task:
+                if count == 0:
+                    class_indices = np.squeeze(global_class_indices[global_class_indices[:,1] ==
+                                                                    cls][:,np.array([True, False])])
+                else:
+                    class_indices = np.append(class_indices, np.squeeze(global_class_indices[global_class_indices[:,1] ==\
+                                                                                 cls][:,np.array([True, False])]))
+
+                count += 1
+
+            class_indices = np.sort(class_indices, axis=None)
+
+            if set_name == "train":
+                train = {
+                    'images':deepcopy(this_set[0][class_indices, :]),
+                    'labels':deepcopy(this_set[1][class_indices, :]),
+                }
+            elif set_name == "test":
+                test = {
+                    'images':deepcopy(this_set[0][class_indices, :]),
+                    'labels':deepcopy(this_set[1][class_indices, :]),
+                }
+
+        cub = {
+            'train': train,
+            'test': test,
+        }
+
+        datasets.append(cub)
+
+    return datasets
 
 ############################################################
 ### CIFAR download utils ###################################

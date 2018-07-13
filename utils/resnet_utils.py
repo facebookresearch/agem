@@ -12,7 +12,7 @@ def _conv(x, kernel_size, out_channels, stride, var_list, pad="SAME", name="conv
         #n = kernel_size * kernel_size * out_channels
         n = kernel_size * in_channels
         stdv = 1.0 / math.sqrt(n)
-        w = tf.get_variable('weights', [kernel_size, kernel_size, in_channels, out_channels],
+        w = tf.get_variable('kernel', [kernel_size, kernel_size, in_channels, out_channels],
                            tf.float32, 
                            initializer=tf.random_uniform_initializer(-stdv, stdv))
                            #initializer=tf.random_normal_initializer(stddev=np.sqrt(2.0/n)))
