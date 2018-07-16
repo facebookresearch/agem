@@ -13,7 +13,56 @@ from six.moves.urllib.request import urlretrieve
 from six.moves import cPickle as pickle
 import tarfile
 import zipfile
+import random
 import cv2
+
+#IMG_MEAN = np.array((104.00698793,116.66876762,122.67891434), dtype=np.float32)
+IMG_MEAN = np.array((103.94,116.78,123.68), dtype=np.float32)
+
+############################################################
+### Data augmentation utils ################################
+############################################################
+def image_scaling(images):
+    """
+    Randomly scales the images between 0.5 to 1.5 times the original size.
+    Args:
+        images: Training images to scale.
+    """
+    scale = tf.random_uniform([1], minval=0.5, maxval=1.5, dtype=tf.float32, seed=None)
+    h_new = tf.to_int32(tf.multiply(tf.to_float(tf.shape(images)[1]), scale))
+    w_new = tf.to_int32(tf.multiply(tf.to_float(tf.shape(images)[2]), scale))
+    new_shape = tf.squeeze(tf.stack([h_new, w_new]), squeeze_dims=[1])
+    images = tf.image.resize_images(images, new_shape)
+    result = tf.map_fn(lambda img: tf.image.random_flip_left_right(img), images)
+    return result
+
+
+def random_crop_and_pad_image(images, crop_h, crop_w):
+    """
+    Randomly crop and pads the input images.
+    Args:
+      images: Training i mages to crop/ pad.
+      crop_h: Height of cropped segment.
+      crop_w: Width of cropped segment.
+    """
+    image_shape = tf.shape(images)
+    image_pad = tf.image.pad_to_bounding_box(images, 0, 0, tf.maximum(crop_h, image_shape[1]), tf.maximum(crop_w, image_shape[2]))
+    img_crop = tf.map_fn(lambda img: tf.random_crop(img, [crop_h,crop_w,3]), image_pad)
+    return img_crop
+
+def random_horizontal_flip(x):
+    """
+    Randomly flip a batch of images horizontally
+    Args:
+    x               Tensor of shape B x H x W x C
+    Returns:
+    random_flipped  Randomly flipped tensor of shape B x H x W x C
+    """
+    # Define random horizontal flip
+    flips = [(slice(None, None, None), slice(None, None, random.choice([-1, None])), slice(None, None, None))
+            for _ in xrange(x.shape[0])]
+    random_flipped = np.array([img[flip] for img, flip in zip(x, flips)])
+    return random_flipped
 
 ############################################################
 ### CUB dataset utils #####################################
@@ -37,10 +86,14 @@ def _CUB_read_img_from_file(data_dir, file_name, img_height, img_width):
             img_file = data_dir.rstrip('\/') + '/' + img_name
             img = cv2.imread(img_file).astype(np.float32)
             # HWC -> WHC, compatible with caffe weights
-            img = np.transpose(img, [1, 0, 2])
+            #img = np.transpose(img, [1, 0, 2])
             img = cv2.resize(img, (img_width, img_height))
+            # Convert RGB to BGR
+            img_r, img_g, img_b = np.split(img, 3, axis=2)
+            img = np.concatenate((img_b, img_g, img_r), axis=2)
+            # Extract mean
+            img -= IMG_MEAN
 
-            #imgs += [np.expand_dims(img, axis=0)]
             imgs += [img]
             labels += [int(img_label)]
             count += 1
@@ -54,16 +107,14 @@ def _CUB_read_img_from_file(data_dir, file_name, img_height, img_width):
     return np.array(imgs), y
 
 
-def _CUB_get_data(data_dir, train_list_file, test_list_file):
+def _CUB_get_data(data_dir, train_list_file, test_list_file, img_height, img_width):
     """ Reads and parses examples from CUB dataset """
 
     dataset = dict()
     dataset['train'] = []
     dataset['test'] = []
 
-    img_height = 227
-    img_width = 227
-    num_val_img = 0   # you can change the number of validation images here
+    num_val_img = 0   # you can change the number of validation images here TODO: Pass this as argument
 
     train_img = []
     train_label = []
@@ -74,44 +125,14 @@ def _CUB_get_data(data_dir, train_list_file, test_list_file):
     train_img, train_label = _CUB_read_img_from_file(data_dir, train_list_file, img_height, img_width)
     test_img, test_label = _CUB_read_img_from_file(data_dir, test_list_file, img_height, img_width)
 
-    """
-    train_img = np.concatenate(train_img)
-    test_img = np.concatenate(test_img)
-    train_label = np.array(train_label)
-    test_label = np.array(test_label)
-    """
-    
-    """
-    # Randomize the split
-    num_train_img = train_img.shape[0] - num_val_img
-    idx_rand = np.random.permutation(train_img.shape[0])
-    print(num_train_img)
-    train_img_new = train_img[idx_rand[:num_train_img], :, :, :]
-    #val_img = train_img[idx_rand[num_train_img:], :, :, :]
-    train_label_new = train_label[idx_rand[:num_train_img]]
-    #val_label = train_label[idx_rand[num_train_img:]]
-	"""
-
-
-    # Compute the mean
-    mean_img = np.mean(np.concatenate([train_img, test_img]), axis=0)
-    #mean_img = np.mean(np.concatenate([train_img_new, test_img]), axis=0)
-
-    # Subtract the mean
-    train_img -= mean_img
-    #train_img_new -= mean_img
-    test_img -= mean_img
-
     dataset['train'].append(train_img)
     dataset['train'].append(train_label)
-    #dataset['train'].append(train_img_new)
-    #dataset['train'].append(train_label_new)
     dataset['test'].append(test_img)
     dataset['test'].append(test_label)
     return dataset
 
 
-def construct_split_cub(task_labels, data_dir, train_list_file, test_list_file):
+def construct_split_cub(task_labels, data_dir, train_list_file, test_list_file, img_height, img_width):
     """
     Construct Split CUB-200 dataset
 
@@ -120,10 +141,12 @@ def construct_split_cub(task_labels, data_dir, train_list_file, test_list_file):
         data_dir            Data directory from where the CUB-200 dataset will be read
         train_list_file     File containing names of training images
         test_list_file      File containing names of test images
+        img_height          Height of image
+        img_width           Width of image
     """
 
     # Get the cub dataset
-    cub_data = _CUB_get_data(data_dir, train_list_file, test_list_file)
+    cub_data = _CUB_get_data(data_dir, train_list_file, test_list_file, img_height, img_width)
 
     # Define a list for storing the data for different tasks
     datasets = []

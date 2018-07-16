@@ -58,6 +58,8 @@ def _bn(x, var_list, train_phase, name='bn_'):
     with tf.variable_scope(name):
         beta = tf.get_variable('beta', shape=[n_out], dtype=tf.float32, initializer=tf.constant_initializer(0.0))
         gamma = tf.get_variable('gamma', shape=[n_out], dtype=tf.float32, initializer=tf.constant_initializer(1.0))
+        var_list.append(beta)
+        var_list.append(gamma)
         batch_mean, batch_var = tf.nn.moments(x, [0,1,2], name='moments')
         ema = tf.train.ExponentialMovingAverage(decay=0.9)
 
@@ -92,7 +94,7 @@ def _residual_block(x, trainable_vars, train_phase, apply_relu=True, name="unit"
 
     return x
 
-def _residual_block_first(x, out_channels, strides, trainable_vars, train_phase, apply_relu=True, name="unit"):
+def _residual_block_first(x, out_channels, strides, trainable_vars, train_phase, apply_relu=True, name="unit", is_CUB=False):
     """
     A generic ResNet Block
     """
@@ -106,7 +108,8 @@ def _residual_block_first(x, out_channels, strides, trainable_vars, train_phase,
                 shortcut = tf.nn.max_pool(x, [1, strides, strides, 1], [1, strides, strides, 1], 'VALID')
         else:
             shortcut = _conv(x, 1, out_channels, strides, trainable_vars, name="shortcut")
-            shortcut = _bn(shortcut, trainable_vars, train_phase, name="bn_0")
+            if not is_CUB:
+                shortcut = _bn(shortcut, trainable_vars, train_phase, name="bn_0")
 
         # Residual block
         x = _conv(x, 3, out_channels, strides, trainable_vars, name="conv_1")

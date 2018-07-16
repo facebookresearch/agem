@@ -14,7 +14,7 @@ import tensorflow as tf
 from copy import deepcopy
 from six.moves import cPickle as pickle
 
-from utils.data_utils import construct_split_cub
+from utils.data_utils import image_scaling, random_crop_and_pad_image, random_horizontal_flip, construct_split_cub
 from utils.utils import get_sample_weights, sample_from_dataset, concatenate_datasets, samples_for_each_class, sample_from_dataset_icarl
 from utils.vis_utils import plot_acc_multiple_runs, plot_histogram, snapshot_experiment_meta_data, snapshot_experiment_eval
 from model import Model
@@ -44,14 +44,17 @@ SYNAP_STGTH = 75000
 FISHER_EMA_DECAY = 0.9      # Exponential moving average decay factor for Fisher computation (online Fisher)
 FISHER_UPDATE_AFTER = 50    # Number of training iterations for which the F_{\theta}^t is computed (see Eq. 10 in RWalk paper) 
 MEMORY_SIZE_PER_TASK = 25   # Number of samples per task
-IMG_HEIGHT = 227
-IMG_WIDTH = 227
+CROP_IMG_HEIGHT = 224
+CROP_IMG_WIDTH = 224
+IMG_HEIGHT = 300
+IMG_WIDTH = 300
 IMG_CHANNELS = 3
 TOTAL_CLASSES = 200          # Total number of classes in the dataset 
 
 ## Logging, saving and testing options
 LOG_DIR = './split_cub_results'
-
+SNAPSHOT_DIR = './cub_snapshots/sgd'
+SAVE_MODEL_PARAMS = True
 ## Evaluation options
 
 ## Task split
@@ -63,7 +66,24 @@ CUB_TRAIN_LIST = 'dataset_lists/CUB_train_list.txt'
 CUB_TEST_LIST = 'dataset_lists/CUB_test_list.txt'
 RESNET18_IMAGENET_CHECKPOINT = './resnet-18-pretrained-imagenet/model.ckpt'
 
-# Define function to load training weights. We will use ImageNet initialization later on
+# Define function to load/ store training weights. We will use ImageNet initialization later on
+def save(saver, sess, logdir, step):
+   '''Save weights.
+
+   Args:
+     saver: TensorFlow Saver object.
+     sess: TensorFlow session.
+     logdir: path to the snapshots directory.
+     step: current training step.
+   '''
+   model_name = 'model.ckpt'
+   checkpoint_path = os.path.join(logdir, model_name)
+
+   if not os.path.exists(logdir):
+      os.makedirs(logdir)
+   saver.save(sess, checkpoint_path, global_step=step)
+   print('The checkpoint has been created.')
+
 def load(saver, sess, ckpt_path):
     '''Load trained weights.
 
@@ -125,7 +145,7 @@ def get_arguments():
                        help="Directory where the plots and model accuracies will be stored.")
     return parser.parse_args()
 
-def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode, train_single_epoch, eval_single_head, do_sampling, 
+def train_task_sequence(model, sess, saver, datasets, task_labels, cross_validate_mode, train_single_epoch, eval_single_head, do_sampling, 
         samples_per_class, train_iters, batch_size, num_runs):
     """
     Train and evaluate LLL system such that we only see a example once
@@ -194,8 +214,6 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
                 task_sample_weights = np.ones([task_train_labels.shape[0]], dtype=np.float32)
 
             num_train_examples = task_train_images.shape[0]
-
-            print('Total train images are {}'.format(num_train_examples))
 
             logit_mask[:] = 0
             # Train a task observing sequence of data
@@ -377,8 +395,11 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
                 ftask = np.array(ftask)
             else:
                 # List to store accuracy for all the tasks for the current trained model
+                ftask = test_task_sequence(model, sess, datasets, task_labels, True, eval_single_head=eval_single_head)
                 ftask = test_task_sequence(model, sess, datasets, task_labels, cross_validate_mode, eval_single_head=eval_single_head)
-            
+
+            if SAVE_MODEL_PARAMS:
+                save(saver, sess, SNAPSHOT_DIR, iters)
             # Store the accuracies computed at task T in a list
             evals.append(ftask)
 
@@ -401,7 +422,7 @@ def test_task_sequence(model, sess, test_data, test_tasks, cross_validate_mode, 
     list_acc = []
 
     if cross_validate_mode:
-        test_set = 'validation'
+        test_set = 'train'
     else:
         test_set = 'test'
 
@@ -438,7 +459,11 @@ def test_task_sequence(model, sess, test_data, test_tasks, cross_validate_mode, 
         # Mean accuracy on the task
         acc = total_corrects/ float(total_test_samples)
         list_acc.append(acc)
-
+        if cross_validate_mode:
+            print('Train acc {}'.format(acc))
+        else:
+            print('Test acc {}'.format(acc))
+    
     return list_acc
 
 def main():
@@ -495,7 +520,7 @@ def main():
         task_labels.append(list(label_array[offset:offset+jmp]))
 
     # Load the split CUB dataset
-    datasets = construct_split_cub(task_labels, args.data_dir, CUB_TRAIN_LIST, CUB_TEST_LIST)
+    datasets = construct_split_cub(task_labels, args.data_dir, CUB_TRAIN_LIST, CUB_TEST_LIST, IMG_HEIGHT, IMG_WIDTH)
 
     # Variables to store the accuracies and standard deviations of the experiment
     acc_mean = dict()
@@ -513,6 +538,10 @@ def main():
         x = tf.placeholder(tf.float32, shape=[None, IMG_HEIGHT, IMG_WIDTH, IMG_CHANNELS])
         y_ = tf.placeholder(tf.float32, shape=[None, TOTAL_CLASSES])
 
+        # Define ops for data augmentation
+        x_aug = image_scaling(x)
+        x_aug = random_crop_and_pad_image(x_aug, CROP_IMG_HEIGHT, CROP_IMG_WIDTH)
+
         # Define the optimizer
         if args.optim == 'ADAM':
             opt = tf.train.AdamOptimizer(learning_rate=args.learning_rate)
@@ -526,8 +555,8 @@ def main():
             opt = tf.train.MomentumOptimizer(args.learning_rate, OPT_MOMENTUM)
 
         # Create the Model/ contruct the graph
-        model = Model(x, y_, NUM_TASKS, opt, args.imp_method, args.synap_stgth, args.fisher_update_after, 
-                args.fisher_ema_decay, network_arch=args.arch, is_CUB=True)
+        model = Model(x_aug, y_, NUM_TASKS, opt, args.imp_method, args.synap_stgth, args.fisher_update_after, 
+                args.fisher_ema_decay, network_arch=args.arch, is_CUB=True, x_test=x)
 
         # Set up tf session and initialize variables.
         config = tf.ConfigProto()
@@ -536,13 +565,15 @@ def main():
         with tf.Session(config=config, graph=graph) as sess:
 
             if args.arch == 'RESNET':
+                saver = tf.train.Saver(var_list=tf.global_variables(), max_to_keep=100)
+
                 # Now that the model is defined load the ImageNet weights
                 # TODO: Resolve this bn_0 issues. This was carried over from GEM version of ResNet-18
-                restore_vars = [v for v in tf.trainable_variables() if 'fc' not in v.name and 'bn_0' not in v.name]
+                restore_vars = [v for v in tf.trainable_variables() if 'fc' not in v.name]
                 loader = tf.train.Saver(restore_vars)
                 load(loader, sess, args.init_checkpoint)
 
-            runs = train_task_sequence(model, sess, datasets, task_labels, args.cross_validate_mode, args.train_single_epoch, args.eval_single_head, 
+            runs = train_task_sequence(model, sess, saver, datasets, task_labels, args.cross_validate_mode, args.train_single_epoch, args.eval_single_head, 
                     args.do_sampling, args.mem_size, args.train_iters, args.batch_size, args.num_runs)
             # Close the session
             sess.close()

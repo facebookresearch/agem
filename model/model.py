@@ -53,12 +53,11 @@ class Model:
     A class defining the model
     """
 
-    def __init__(self, x, y_, num_tasks, opt, imp_method, synap_stgth, fisher_update_after, fisher_ema_decay, network_arch='FC',is_CUB=False):
+    def __init__(self, x_train, y_, num_tasks, opt, imp_method, synap_stgth, fisher_update_after, fisher_ema_decay, network_arch='FC', is_CUB=False, x_test=None):
         """
         Instantiate the model
         """
         # Define some placeholders which are used to feed the data to the model
-        self.x = x
         self.y_ = y_
         self.total_classes = int(self.y_.get_shape()[1])
         self.sample_weights = tf.placeholder(tf.float32, shape=[None])
@@ -69,7 +68,13 @@ class Model:
         self.train_step = tf.placeholder(dtype=tf.float32, shape=())
         self.train_phase = tf.placeholder(tf.bool, name='train_phase')
         self.is_CUB = is_CUB # To use a different (standard one) ResNet-18 for CUB
-
+        if self.is_CUB:
+            # If CUB datatset then use augmented x (x_train) for training and non-augmented x (x_test) for testing
+            self.x = tf.cond(self.train_phase, lambda: tf.identity(x_train), lambda: tf.identity(x_test))
+        else:
+            # We don't use data augmentation for other datasets
+            self.x = x_train
+        
         # Save the arguments passed from the main script
         self.opt = opt
         self.num_tasks = num_tasks
@@ -299,6 +304,23 @@ class Model:
 
         return create_fc_layer(h, weights[-1], biases[-1], apply_relu=False)
 
+    def vgg_16_conv_feedforward(self, h):
+        """
+        Forward pass through a VGG 16 network
+
+        Return:
+            Logits of a VGG 16 network
+        """
+        # Conv1
+        # Conv2
+        # Conv3
+        # Conv4
+        # Conv5
+        # fc6
+        # fc7
+        # fc8
+
+
     def resnet18_conv_feedforward(self, h, kernels, filters, strides):
         """
         Forward pass through a ResNet-18 network
@@ -318,15 +340,15 @@ class Model:
         h = _residual_block(h, self.trainable_vars, self.train_phase, name='conv2_2')
 
         # Conv3_x
-        h = _residual_block_first(h, filters[2], strides[2], self.trainable_vars, self.train_phase, name='conv3_1')
+        h = _residual_block_first(h, filters[2], strides[2], self.trainable_vars, self.train_phase, name='conv3_1', is_CUB=self.is_CUB)
         h = _residual_block(h, self.trainable_vars, self.train_phase, name='conv3_2')
 
         # Conv4_x
-        h = _residual_block_first(h, filters[3], strides[3], self.trainable_vars, self.train_phase, name='conv4_1')
+        h = _residual_block_first(h, filters[3], strides[3], self.trainable_vars, self.train_phase, name='conv4_1', is_CUB=self.is_CUB)
         h = _residual_block(h, self.trainable_vars, self.train_phase, name='conv4_2')
 
         # Conv5_x
-        h = _residual_block_first(h, filters[4], strides[4], self.trainable_vars, self.train_phase, name='conv5_1')
+        h = _residual_block_first(h, filters[4], strides[4], self.trainable_vars, self.train_phase, name='conv5_1', is_CUB=self.is_CUB)
         h = _residual_block(h, self.trainable_vars, self.train_phase, name='conv5_2')
 
         # Apply average pooling
@@ -334,7 +356,7 @@ class Model:
 
         logits = _fc(h, self.total_classes, self.trainable_vars, name='fc_1')
 
-        return logits 
+        return logits
 
     def loss_and_gradients(self, imp_method):
         """
@@ -361,12 +383,10 @@ class Model:
                 f, scr in zip(self.trainable_vars, self.star_vars, self.normalized_fisher_at_minima_vars, 
                     self.normalized_score_vars)])
       
-        """
         # ***** DON't USE THIS WITH MULTI-HEAD SETTING SINCE THIS WILL UPDATE ALL THE WEIGHTS *****
         # If CNN arch, then use the weight decay
-        if self.network_arch == 'CNN':
-            self.unweighted_entropy += tf.add_n([0.0005 * tf.nn.l2_loss(v) for v in self.trainable_vars if 'weights' in v.name])
-        """
+        if self.is_CUB:
+            self.unweighted_entropy += tf.add_n([0.0005 * tf.nn.l2_loss(v) for v in self.trainable_vars if 'weights' in v.name or 'kernel' in v.name])
 
         # Regularized training loss
         self.reg_loss = tf.squeeze(self.unweighted_entropy + self.synap_stgth * reg)

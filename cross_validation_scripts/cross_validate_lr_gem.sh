@@ -28,12 +28,12 @@ elif [ $EXP = "PERMUTE_MNIST" ]; then
         done
     done
 elif [ $EXP = "SPLIT_CIFAR" ]; then
-    LR=(0.0001 0.0003 0.001 0.003 0.01 0.03 0.1 0.3 1.0)
+    LR=(0.01 0.03 0.1 0.3 1.0)
     for lamda in ${SYNAP_STGTH[@]}
     do
         for lr in ${LR[@]}
         do
-            python ../conv_split_cifar.py --cross-validate-mode --train-single-epoch --arch $ARCH --num-runs 3 --batch-size $BATCH_SIZE --optim $OPTIM --learning-rate $lr --imp-method $IMP_METHOD --synap-stgth $lamda --log-dir $LOG_DIR
+            python ../conv_split_cifar.py --cross-validate-mode --train-single-epoch --arch $ARCH --num-runs 2 --batch-size $BATCH_SIZE --optim $OPTIM --learning-rate $lr --imp-method $IMP_METHOD --synap-stgth $lamda --log-dir $LOG_DIR
         done
     done
 else
