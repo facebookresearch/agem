@@ -132,7 +132,7 @@ def _CUB_get_data(data_dir, train_list_file, test_list_file, img_height, img_wid
     return dataset
 
 
-def construct_split_cub(task_labels, data_dir, train_list_file, test_list_file, img_height, img_width):
+def construct_split_cub(task_labels, data_dir, train_list_file, test_list_file, img_height, img_width, attr_file=None):
     """
     Construct Split CUB-200 dataset
 
@@ -143,10 +143,16 @@ def construct_split_cub(task_labels, data_dir, train_list_file, test_list_file, 
         test_list_file      File containing names of test images
         img_height          Height of image
         img_width           Width of image
+        get_attr            File from where to load the attributes
     """
 
     # Get the cub dataset
     cub_data = _CUB_get_data(data_dir, train_list_file, test_list_file, img_height, img_width)
+
+    # Get the attribute vector
+    if attr_file:
+        with open(attr_file, 'rb') as f:
+            cub_attr = pickle.load(f)
 
     # Define a list for storing the data for different tasks
     datasets = []
@@ -192,7 +198,10 @@ def construct_split_cub(task_labels, data_dir, train_list_file, test_list_file, 
 
         datasets.append(cub)
 
-    return datasets
+    if attr_file:
+        return datasets, cub_attr 
+    else:
+        return datasets
 
 ############################################################
 ### CIFAR download utils ###################################

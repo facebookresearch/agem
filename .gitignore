@@ -8,6 +8,7 @@
 *MNIST_data*
 *CIFAR_data*
 *CUB_data*
+*snapshots*
 *resnet-18-pretrained*
 *_experiment*
 .nfs*

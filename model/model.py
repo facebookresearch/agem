@@ -53,7 +53,8 @@ class Model:
     A class defining the model
     """
 
-    def __init__(self, x_train, y_, num_tasks, opt, imp_method, synap_stgth, fisher_update_after, fisher_ema_decay, network_arch='FC', is_CUB=False, x_test=None):
+    def __init__(self, x_train, y_, num_tasks, opt, imp_method, synap_stgth, fisher_update_after, fisher_ema_decay, network_arch='FC', 
+            is_CUB=False, x_test=None, attr=None):
         """
         Instantiate the model
         """
@@ -74,6 +75,14 @@ class Model:
         else:
             # We don't use data augmentation for other datasets
             self.x = x_train
+
+        # Class attributes for zero shot transfer
+        self.class_attr = attr
+
+        if self.class_attr is not None:
+            self.attr_dims = int(self.class_attr.get_shape()[1])
+        else:
+            self.output_mask = tf.placeholder(dtype=tf.float32, shape=[self.total_classes])
         
         # Save the arguments passed from the main script
         self.opt = opt
@@ -85,6 +94,7 @@ class Model:
 
         # A scalar variable for previous syanpse strength
         self.synap_stgth = tf.constant(synap_stgth, shape=[1], dtype=tf.float32)
+        self.triplet_loss_scale = 2.1
 
         # Define different variables
         self.weights_old = []
@@ -106,10 +116,21 @@ class Model:
         self.weights_delta_old_vars = []
         self.gem_reg_grads = []
 
-        # Define an output mask that sets for which classes we want training
-        # and prediction
-        self.output_mask = tf.placeholder(dtype=tf.float32, shape=[self.total_classes])
+        if self.class_attr is not None:
+            self.loss_and_train_ops_for_attr_vector()
+        else:
+            self.loss_and_train_ops_for_one_hot_vector()
 
+        # Set the operations to reset the optimier when needed
+        self.reset_optimizer_ops()
+    
+####################################################################################
+#### Internal APIs of the class. These should not be called/ exposed externally ####
+####################################################################################
+    def loss_and_train_ops_for_one_hot_vector(self):
+        """
+        Loss and training operations for the training of one-hot vector based classification model
+        """
         # Define approproate network
         if self.network_arch == 'FC':
             input_feature_dim = int(self.x.get_shape()[1])
@@ -193,12 +214,86 @@ class Model:
         self.correct_predictions = tf.equal(tf.argmax(self.pruned_logits, 1), tf.argmax(self.y_, 1))
         self.accuracy = tf.reduce_mean(tf.cast(self.correct_predictions, tf.float32))
    
-        # Set the operations to reset the optimier when needed
-        self.reset_optimizer_ops()
-    
-####################################################################################
-#### Internal APIs of the class. These should not be called/ exposed externally ####
-####################################################################################
+    def loss_and_train_ops_for_attr_vector(self): 
+        """
+        Loss and training operations for the training of joined embedding model
+        """
+        # Define approproate network
+        if self.network_arch == 'FC':
+            input_feature_dim = int(self.x.get_shape()[1])
+            layer_dims = [input_feature_dim, 256, 256, self.total_classes]
+            self.fc_variables(layer_dims)
+            logits = self.fc_feedforward(self.x, self.weights, self.biases)
+
+        elif self.network_arch == 'CNN':
+            num_channels = int(self.x.get_shape()[-1])
+            self.image_size = int(self.x.get_shape()[1])
+            kernels = [3, 3, 3, 3, 3]
+            depth = [num_channels, 32, 32, 64, 64, 512]
+            self.conv_variables(kernels, depth)
+            logits = self.conv_feedforward(self.x, self.weights, self.biases, apply_dropout=True)
+            
+        elif self.network_arch == 'RESNET':
+            if self.is_CUB:
+                # Standard ResNet-18
+                kernels = [7, 3, 3, 3, 3]
+                filters = [64, 64, 128, 256, 512]
+                strides = [2, 0, 2, 2, 2]
+            else:
+                # Same resnet-18 as used in GEM paper
+                kernels = [3, 3, 3, 3, 3]
+                filters = [20, 20, 40, 80, 160]
+                strides = [1, 0, 2, 2, 2]
+            f_x = self.resnet18_conv_feedforward(self.x, kernels, filters, strides)
+            attr_embed = self.get_attribute_embedding(self.class_attr)
+
+        # Create list of variables for storing different measures
+        # Note: This method has to be called before calculating fisher 
+        # or any other importance measure
+        self.init_vars()
+
+        # Define triplet loss
+        f_x_normalized = tf.nn.l2_normalize(f_x, axis=1)
+        attr_embed_normalized = tf.nn.l2_normalize(attr_embed, axis=1)
+
+        self.similarity_kernel = self.triplet_loss_scale * tf.matmul(f_x_normalized, tf.transpose(attr_embed_normalized)) # B x C
+        self.triplet_softmax_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=self.y_, logits=self.similarity_kernel))
+
+        # Create operations for loss and gradient calculation
+        self.loss_and_gradients(self.imp_method)
+
+        # Store the current weights before doing a train step
+        self.get_current_weights()
+
+        # Define the training operation here as Pathint ops depend on the train ops
+        self.train_op()
+
+        # Create operations to compute importance depending on the importance methods
+        if self.imp_method == 'EWC':
+            self.create_fisher_ops()
+        elif self.imp_method == 'PI':
+            self.create_pathint_ops()
+        elif self.imp_method == 'RWALK':
+            self.create_fisher_ops()
+            self.create_pathint_ops()
+        elif self.imp_method == 'MAS':
+            self.create_hebbian_ops()
+        elif self.imp_method == 'GEM':
+            self.create_gem_ops()
+
+        # Create weight save and store ops
+        self.weights_store_ops()
+
+        # Summary operations for visualization
+        tf.summary.scalar("triplet_loss", self.triplet_softmax_loss)
+        for v in self.trainable_vars:
+            tf.summary.histogram(v.name.replace(":", "_"), v)
+        self.merged_summary = tf.summary.merge_all()
+
+        # Accuracy measure
+        self.correct_predictions = tf.equal(tf.argmax(self.similarity_kernel, 1), tf.argmax(self.y_, 1))
+        self.accuracy = tf.reduce_mean(tf.cast(self.correct_predictions, tf.float32))
+   
     def fc_variables(self, layer_dims):
         """
         Defines variables for a 3-layer fc network
@@ -354,9 +449,25 @@ class Model:
         # Apply average pooling
         h = tf.reduce_mean(h, [1, 2])
 
-        logits = _fc(h, self.total_classes, self.trainable_vars, name='fc_1')
+        if self.class_attr is not None:
+            logits = _fc(h, self.attr_dims, self.trainable_vars, name='fc_1')
+        else:
+            logits = _fc(h, self.total_classes, self.trainable_vars, name='fc_1')
 
         return logits
+
+    def get_attribute_embedding(self, attr):
+        """
+        Get attribute embedding using a simple FC network
+
+        Returns:
+            Embedding vector of k x ATTR_DIMS 
+        """
+        w = weight_variable([self.attr_dims, self.attr_dims], name='attr_embed_w')
+        b = bias_variable([self.attr_dims], name='attr_embed_b')
+        self.trainable_vars.append(w)
+        self.trainable_vars.append(b)
+        return create_fc_layer(attr, w, b, apply_relu=False)
 
     def loss_and_gradients(self, imp_method):
         """
@@ -382,22 +493,32 @@ class Model:
             reg = tf.add_n([tf.reduce_sum(tf.square(w - w_star) * (f + scr)) for w, w_star, 
                 f, scr in zip(self.trainable_vars, self.star_vars, self.normalized_fisher_at_minima_vars, 
                     self.normalized_score_vars)])
-      
+     
+        """
         # ***** DON't USE THIS WITH MULTI-HEAD SETTING SINCE THIS WILL UPDATE ALL THE WEIGHTS *****
         # If CNN arch, then use the weight decay
         if self.is_CUB:
             self.unweighted_entropy += tf.add_n([0.0005 * tf.nn.l2_loss(v) for v in self.trainable_vars if 'weights' in v.name or 'kernel' in v.name])
+        """
 
-        # Regularized training loss
-        self.reg_loss = tf.squeeze(self.unweighted_entropy + self.synap_stgth * reg)
-
-        # Compute the gradients of the vanilla loss
-        self.vanilla_gradients_vars = self.opt.compute_gradients(self.unweighted_entropy, 
-                var_list=self.trainable_vars)
-
-        # Compute the gradients of regularized loss
-        self.reg_gradients_vars = self.opt.compute_gradients(self.reg_loss, 
-                var_list=self.trainable_vars)
+        if self.class_attr is not None:
+            # Regularized training loss
+            self.reg_loss = tf.squeeze(self.triplet_softmax_loss + self.synap_stgth * reg)
+            # Compute the gradients of the vanilla loss
+            self.vanilla_gradients_vars = self.opt.compute_gradients(self.triplet_softmax_loss, 
+                    var_list=self.trainable_vars)
+            # Compute the gradients of regularized loss
+            self.reg_gradients_vars = self.opt.compute_gradients(self.reg_loss, 
+                    var_list=self.trainable_vars) 
+        else:
+            # Regularized training loss
+            self.reg_loss = tf.squeeze(self.unweighted_entropy + self.synap_stgth * reg)
+            # Compute the gradients of the vanilla loss
+            self.vanilla_gradients_vars = self.opt.compute_gradients(self.unweighted_entropy, 
+                    var_list=self.trainable_vars)
+            # Compute the gradients of regularized loss
+            self.reg_gradients_vars = self.opt.compute_gradients(self.reg_loss, 
+                    var_list=self.trainable_vars)
 
     def train_op(self):
         """
