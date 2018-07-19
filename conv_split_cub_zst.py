@@ -34,7 +34,7 @@ VALID_OPTIMS = ['SGD', 'MOMENTUM', 'ADAM']
 OPTIM = 'SGD'
 OPT_MOMENTUM = 0.9
 OPT_POWER = 0.9
-VALID_ARCHS = ['CNN', 'RESNET']
+VALID_ARCHS = ['CNN', 'VGG', 'RESNET']
 ARCH = 'RESNET'
 
 ## Model options
@@ -44,10 +44,8 @@ SYNAP_STGTH = 75000
 FISHER_EMA_DECAY = 0.9      # Exponential moving average decay factor for Fisher computation (online Fisher)
 FISHER_UPDATE_AFTER = 50    # Number of training iterations for which the F_{\theta}^t is computed (see Eq. 10 in RWalk paper) 
 MEMORY_SIZE_PER_TASK = 25   # Number of samples per task
-CROP_IMG_HEIGHT = 224
-CROP_IMG_WIDTH = 224
-IMG_HEIGHT = 300
-IMG_WIDTH = 300
+IMG_HEIGHT = 224
+IMG_WIDTH = 224
 IMG_CHANNELS = 3
 TOTAL_CLASSES = 200          # Total number of classes in the dataset 
 
@@ -184,6 +182,12 @@ def train_task_sequence(model, sess, saver, datasets, class_attrs, num_classes_p
             # List to store important samples from the previous tasks
             last_task_x = None
             last_task_y_ = None
+
+        # Loss array, for how many fix number of iterations we are fine with loss not decreasing
+        loss_world = np.zeros([4])
+        loss_world[:] = float("inf")
+        i_am_increasing = 0
+        my_threshold = 4
 
         # Training loop for all the tasks
         for task in range(len(datasets)):
@@ -323,6 +327,18 @@ def train_task_sequence(model, sess, saver, datasets, class_attrs, num_classes_p
                 if (math.isnan(loss)):
                     print('ERROR: NaNs NaNs NaNs!!!')
                     sys.exit(0)
+
+                if (iters > 1000 and iters % 100 == 0):
+                    # Check if the loss has become stagnant
+                    if loss < loss_world.max():
+                        loss_world[np.argmax(loss_world)] = loss
+                        i_am_increasing = 0
+                    else:
+                        i_am_increasing += 1
+
+                    if (i_am_increasing > my_threshold):
+                        print('Training exited as loss was not decreasing on training set')
+                        break
 
             print('\t\t\t\tTraining for Task%d done!'%(task))
 
@@ -521,7 +537,7 @@ def main():
 
         # Define ops for data augmentation
         x_aug = image_scaling(x)
-        x_aug = random_crop_and_pad_image(x_aug, CROP_IMG_HEIGHT, CROP_IMG_WIDTH)
+        x_aug = random_crop_and_pad_image(x_aug, IMG_HEIGHT, IMG_WIDTH)
 
         # Define the optimizer
         if args.optim == 'ADAM':
@@ -545,14 +561,20 @@ def main():
 
         with tf.Session(config=config, graph=graph) as sess:
 
+            saver = tf.train.Saver(var_list=tf.global_variables(), max_to_keep=100)
             if args.arch == 'RESNET':
-                saver = tf.train.Saver(var_list=tf.global_variables(), max_to_keep=100)
-
                 # Now that the model is defined load the ImageNet weights
                 # TODO: Resolve this bn_0 issues. This was carried over from GEM version of ResNet-18
                 restore_vars = [v for v in tf.trainable_variables() if 'fc' not in v.name and 'attr_embed' not in v.name]
                 loader = tf.train.Saver(restore_vars)
                 load(loader, sess, args.init_checkpoint)
+
+            elif args.arch == 'VGG':
+                # Load the pretrained weights from the npz file
+                weights = np.load(args.init_checkpoint)
+                keys = sorted(weights.keys())
+                for i, key in enumerate(keys[:-2]): # Load everything except the last layer and attribute embedding layer
+                    sess.run(model.trainable_vars[i].assign(weights[key]))
 
             runs = train_task_sequence(model, sess, saver, datasets, CUB_attr, num_classes_per_task, task_labels, args.cross_validate_mode, 
                     args.train_single_epoch, args.eval_single_head, args.do_sampling, args.mem_size, args.train_iters, args.batch_size, args.num_runs)

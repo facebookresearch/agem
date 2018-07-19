@@ -34,7 +34,7 @@ VALID_OPTIMS = ['SGD', 'MOMENTUM', 'ADAM']
 OPTIM = 'SGD'
 OPT_MOMENTUM = 0.9
 OPT_POWER = 0.9
-VALID_ARCHS = ['CNN', 'RESNET']
+VALID_ARCHS = ['CNN', 'VGG', 'RESNET']
 ARCH = 'RESNET'
 
 ## Model options
@@ -44,10 +44,8 @@ SYNAP_STGTH = 75000
 FISHER_EMA_DECAY = 0.9      # Exponential moving average decay factor for Fisher computation (online Fisher)
 FISHER_UPDATE_AFTER = 50    # Number of training iterations for which the F_{\theta}^t is computed (see Eq. 10 in RWalk paper) 
 MEMORY_SIZE_PER_TASK = 25   # Number of samples per task
-CROP_IMG_HEIGHT = 224
-CROP_IMG_WIDTH = 224
-IMG_HEIGHT = 300
-IMG_WIDTH = 300
+IMG_HEIGHT = 224
+IMG_WIDTH = 224
 IMG_CHANNELS = 3
 TOTAL_CLASSES = 200          # Total number of classes in the dataset 
 
@@ -58,12 +56,12 @@ SAVE_MODEL_PARAMS = False
 ## Evaluation options
 
 ## Task split
-NUM_TASKS = 1
+NUM_TASKS = 10
 
 ## Dataset specific options
 DATA_DIR='CUB_data/CUB_200_2011/images'
-CUB_TRAIN_LIST = 'dataset_lists/CUB_train_list.txt'
-CUB_TEST_LIST = 'dataset_lists/CUB_test_list.txt'
+CUB_TRAIN_LIST = '../dataset_lists/CUB_train_list.txt'
+CUB_TEST_LIST = '../dataset_lists/CUB_test_list.txt'
 RESNET18_IMAGENET_CHECKPOINT = './resnet-18-pretrained-imagenet/model.ckpt'
 
 # Define function to load/ store training weights. We will use ImageNet initialization later on
@@ -139,8 +137,8 @@ def get_arguments():
                        help="Directory from where the CUB data will be read.\
                                NOTE: Provide path till <CUB_DIR>/images")
     parser.add_argument("--init-checkpoint", type=str, default=RESNET18_IMAGENET_CHECKPOINT,
-                       help="TF checkpoint file containing initialization for ImageNet.\
-                               NOTE: Use this only with ResNet-18 architecture")
+                       help="Path to TF checkpoint file or npz file containing initialization for ImageNet.\
+                               NOTE: NPZ file for VGG and TF checkpoint for ResNet")
     parser.add_argument("--log-dir", type=str, default=LOG_DIR,
                        help="Directory where the plots and model accuracies will be stored.")
     return parser.parse_args()
@@ -184,6 +182,12 @@ def train_task_sequence(model, sess, saver, datasets, task_labels, cross_validat
         # Mask for softmax 
         logit_mask = np.zeros(TOTAL_CLASSES)
 
+        # Loss array, for how many fix number of iterations we are fine with loss not decreasing
+        loss_world = np.zeros([4])
+        loss_world[:] = float("inf")
+        i_am_increasing = 0
+        my_threshold = 4
+
         # Training loop for all the tasks
         for task in range(len(datasets)):
             print('\t\tTask %d:'%(task))
@@ -218,8 +222,8 @@ def train_task_sequence(model, sess, saver, datasets, task_labels, cross_validat
             logit_mask[:] = 0
             # Train a task observing sequence of data
             if train_single_epoch:
-                # TODO: Use a fix number of batches for now to avoid complicated logic while averaging accuracies
-                num_iters = num_train_examples// batch_size
+                # Ceiling operation
+                num_iters = (num_train_examples + batch_size - 1) // batch_size
                 if cross_validate_mode:
                     if do_sampling:
                         logit_mask[test_labels] = 1.0
@@ -247,7 +251,8 @@ def train_task_sequence(model, sess, saver, datasets, task_labels, cross_validat
             for iters in range(num_iters):
 
                 if train_single_epoch and not cross_validate_mode:
-                    if (iters <= 50 and iters % 5 == 0) or (iters > 50 and iters % 50 == 0):
+                    #if (iters <= 50 and iters % 5 == 0) or (iters > 50 and iters % 50 == 0):
+                    if(1):
                         # Snapshot the current performance across all tasks after each mini-batch
                         fbatch = test_task_sequence(model, sess, datasets, task_labels, cross_validate_mode, eval_single_head=eval_single_head)
                         ftask.append(fbatch)
@@ -340,12 +345,27 @@ def train_task_sequence(model, sess, saver, datasets, task_labels, cross_validat
                     _, _, _, _, loss = sess.run([model.set_tmp_fisher, model.weights_old_ops_grouped, 
                         model.train, model.update_small_omega, model.reg_loss], feed_dict=feed_dict)
 
-                if (iters % 100 == 0):
+
+                if (iters % 100 == 0 or train_single_epoch):
                     print('Step {:d} {:.3f}'.format(iters, loss))
 
                 if (math.isnan(loss)):
                     print('ERROR: NaNs NaNs NaNs!!!')
                     sys.exit(0)
+
+                """
+                if (iters > 1000 and iters % 100 == 0):
+                    # Check if the loss has become stagnant
+                    if loss < loss_world.max():
+                        loss_world[np.argmax(loss_world)] = loss
+                        i_am_increasing = 0
+                    else:                    
+                        i_am_increasing += 1
+
+                    if (i_am_increasing > my_threshold):
+                        print('Training exited as loss was not decreasing on training set')
+                        break
+                """
 
             print('\t\t\t\tTraining for Task%d done!'%(task))
 
@@ -395,7 +415,6 @@ def train_task_sequence(model, sess, saver, datasets, task_labels, cross_validat
                 ftask = np.array(ftask)
             else:
                 # List to store accuracy for all the tasks for the current trained model
-                ftask = test_task_sequence(model, sess, datasets, task_labels, True, eval_single_head=eval_single_head)
                 ftask = test_task_sequence(model, sess, datasets, task_labels, cross_validate_mode, eval_single_head=eval_single_head)
 
             if SAVE_MODEL_PARAMS:
@@ -422,7 +441,7 @@ def test_task_sequence(model, sess, test_data, test_tasks, cross_validate_mode, 
     list_acc = []
 
     if cross_validate_mode:
-        test_set = 'train'
+        test_set = 'test'
     else:
         test_set = 'test'
 
@@ -459,10 +478,6 @@ def test_task_sequence(model, sess, test_data, test_tasks, cross_validate_mode, 
         # Mean accuracy on the task
         acc = total_corrects/ float(total_test_samples)
         list_acc.append(acc)
-        if cross_validate_mode:
-            print('Train acc {}'.format(acc))
-        else:
-            print('Test acc {}'.format(acc))
     
     return list_acc
 
@@ -491,26 +506,6 @@ def main():
         print('Log directory %s created!'%(args.log_dir))
         os.makedirs(args.log_dir)
 
-    # Generate the experiment key and store the meta data in a file
-    exper_meta_data = {'ARCH': args.arch,
-            'DATASET': 'SPLIT_CUB',
-            'NUM_RUNS': args.num_runs,
-            'EVAL_SINGLE_HEAD': args.eval_single_head, 
-            'TRAIN_SINGLE_EPOCH': args.train_single_epoch, 
-            'IMP_METHOD': args.imp_method, 
-            'SYNAP_STGTH': args.synap_stgth,
-            'FISHER_EMA_DECAY': args.fisher_ema_decay,
-            'FISHER_UPDATE_AFTER': args.fisher_update_after,
-            'OPTIM': args.optim, 
-            'LR': args.learning_rate, 
-            'BATCH_SIZE': args.batch_size, 
-            'EPS_MEMORY': args.do_sampling, 
-            'MEM_SIZE': args.mem_size}
-    experiment_id = "SPLIT_CUB_%s_%r_%r_%s_%s_%s_%r_%s-"%(args.arch, args.eval_single_head, args.train_single_epoch, args.imp_method, 
-            str(args.synap_stgth).replace('.', '_'), 
-            str(args.batch_size), args.do_sampling, str(args.mem_size)) + datetime.datetime.now().strftime("%y-%m-%d-%H-%M")
-    snapshot_experiment_meta_data(args.log_dir, experiment_id, exper_meta_data)
-
     # Get the task labels from the total number of tasks and full label space
     task_labels = []
     label_array = np.arange(TOTAL_CLASSES)
@@ -522,77 +517,115 @@ def main():
     # Load the split CUB dataset
     datasets = construct_split_cub(task_labels, args.data_dir, CUB_TRAIN_LIST, CUB_TEST_LIST, IMG_HEIGHT, IMG_WIDTH)
 
-    # Variables to store the accuracies and standard deviations of the experiment
-    acc_mean = dict()
-    acc_std = dict()
+    #learning_rate_list = [args.learning_rate]
+    learning_rate_list = [0.3, 0.1, 0.03, 0.01, 0.003, 0.001]
+    for lr in learning_rate_list:
+        # Generate the experiment key and store the meta data in a file
+        exper_meta_data = {'ARCH': args.arch,
+                'DATASET': 'SPLIT_CUB',
+                'NUM_RUNS': args.num_runs,
+                'EVAL_SINGLE_HEAD': args.eval_single_head, 
+                'TRAIN_SINGLE_EPOCH': args.train_single_epoch, 
+                'IMP_METHOD': args.imp_method, 
+                'SYNAP_STGTH': args.synap_stgth,
+                'FISHER_EMA_DECAY': args.fisher_ema_decay,
+                'FISHER_UPDATE_AFTER': args.fisher_update_after,
+                'OPTIM': args.optim, 
+                'LR': lr, 
+                'BATCH_SIZE': args.batch_size, 
+                'EPS_MEMORY': args.do_sampling, 
+                'MEM_SIZE': args.mem_size}
+        experiment_id = "SPLIT_CUB_ONE_HOT%s_%r_%r_%s_%s_%s_%s_%r_%s-"%(args.arch, args.eval_single_head, args.train_single_epoch, args.imp_method, 
+                str(args.synap_stgth).replace('.', '_'), str(args.synap_stgth).replace('.', '_'),
+                str(args.batch_size), args.do_sampling, str(args.mem_size)) + datetime.datetime.now().strftime("%y-%m-%d-%H-%M")
+        snapshot_experiment_meta_data(args.log_dir, experiment_id, exper_meta_data)
 
-    # Reset the default graph
-    tf.reset_default_graph()
-    graph  = tf.Graph()
-    with graph.as_default():
 
-        # Set the random seed
-        tf.set_random_seed(RANDOM_SEED)
+        # Variables to store the accuracies and standard deviations of the experiment
+        acc_mean = dict()
+        acc_std = dict()
 
-        # Define Input and Output of the model
-        x = tf.placeholder(tf.float32, shape=[None, IMG_HEIGHT, IMG_WIDTH, IMG_CHANNELS])
-        y_ = tf.placeholder(tf.float32, shape=[None, TOTAL_CLASSES])
+        # Reset the default graph
+        tf.reset_default_graph()
+        graph  = tf.Graph()
+        with graph.as_default():
 
-        # Define ops for data augmentation
-        x_aug = image_scaling(x)
-        x_aug = random_crop_and_pad_image(x_aug, CROP_IMG_HEIGHT, CROP_IMG_WIDTH)
+            # Set the random seed
+            tf.set_random_seed(RANDOM_SEED)
 
-        # Define the optimizer
-        if args.optim == 'ADAM':
-            opt = tf.train.AdamOptimizer(learning_rate=args.learning_rate)
+            # Define Input and Output of the model
+            x = tf.placeholder(tf.float32, shape=[None, IMG_HEIGHT, IMG_WIDTH, IMG_CHANNELS])
+            y_ = tf.placeholder(tf.float32, shape=[None, TOTAL_CLASSES])
 
-        elif args.optim == 'SGD':
-            opt = tf.train.GradientDescentOptimizer(learning_rate=args.learning_rate)
+            if not args.train_single_epoch: 
+            # Define ops for data augmentation
+                x_aug = image_scaling(x)
+                x_aug = random_crop_and_pad_image(x_aug, IMG_HEIGHT, IMG_WIDTH)
 
-        elif args.optim == 'MOMENTUM':
-            base_lr = tf.constant(args.learning_rate)
-            learning_rate = tf.scalar_mul(base_lr, tf.pow((1 - train_step / training_iters), OPT_POWER))
-            opt = tf.train.MomentumOptimizer(args.learning_rate, OPT_MOMENTUM)
+            # Define the optimizer
+            if args.optim == 'ADAM':
+                opt = tf.train.AdamOptimizer(learning_rate=lr)
 
-        # Create the Model/ contruct the graph
-        model = Model(x_aug, y_, NUM_TASKS, opt, args.imp_method, args.synap_stgth, args.fisher_update_after, 
-                args.fisher_ema_decay, network_arch=args.arch, is_CUB=True, x_test=x)
+            elif args.optim == 'SGD':
+                opt = tf.train.GradientDescentOptimizer(learning_rate=lr)
 
-        # Set up tf session and initialize variables.
-        config = tf.ConfigProto()
-        config.gpu_options.allow_growth = True
+            elif args.optim == 'MOMENTUM':
+                base_lr = tf.constant(lr)
+                learning_rate = tf.scalar_mul(base_lr, tf.pow((1 - train_step / training_iters), OPT_POWER))
+                opt = tf.train.MomentumOptimizer(lr, OPT_MOMENTUM)
 
-        with tf.Session(config=config, graph=graph) as sess:
+            # Create the Model/ contruct the graph
+            if args.train_single_epoch:
+                # When training using a single epoch then there is no need for data augmentation
+                model = Model(x, y_, NUM_TASKS, opt, args.imp_method, args.synap_stgth, args.fisher_update_after, 
+                        args.fisher_ema_decay, network_arch=args.arch, is_CUB=True)
+            else:
+                model = Model(x_aug, y_, NUM_TASKS, opt, args.imp_method, args.synap_stgth, args.fisher_update_after, 
+                        args.fisher_ema_decay, network_arch=args.arch, is_CUB=True, x_test=x)
 
-            if args.arch == 'RESNET':
+            # Set up tf session and initialize variables.
+            config = tf.ConfigProto()
+            config.gpu_options.allow_growth = True
+
+            with tf.Session(config=config, graph=graph) as sess:
+
                 saver = tf.train.Saver(var_list=tf.global_variables(), max_to_keep=100)
+                if args.arch == 'RESNET':
+                    # Now that the model is defined load the ImageNet weights for ResNet-18
+                    # TODO: Resolve this bn_0 issues. This was carried over from GEM version of ResNet-18
+                    restore_vars = [v for v in tf.trainable_variables() if 'fc' not in v.name]
+                    loader = tf.train.Saver(restore_vars)
+                    load(loader, sess, args.init_checkpoint)
+                elif args.arch == 'VGG':
+                    # Load the pretrained weights from the npz file
+                    weights = np.load(args.init_checkpoint)
+                    keys = sorted(weights.keys())
+                    for i, key in enumerate(keys[:-2]): # Load everything except the last layer
+                        sess.run(model.trainable_vars[i].assign(weights[key]))
 
-                # Now that the model is defined load the ImageNet weights
-                # TODO: Resolve this bn_0 issues. This was carried over from GEM version of ResNet-18
-                restore_vars = [v for v in tf.trainable_variables() if 'fc' not in v.name]
-                loader = tf.train.Saver(restore_vars)
-                load(loader, sess, args.init_checkpoint)
+                runs = train_task_sequence(model, sess, saver, datasets, task_labels, args.cross_validate_mode, args.train_single_epoch, args.eval_single_head, 
+                        args.do_sampling, args.mem_size, args.train_iters, args.batch_size, args.num_runs)
+                # Close the session
+                sess.close()
 
-            runs = train_task_sequence(model, sess, saver, datasets, task_labels, args.cross_validate_mode, args.train_single_epoch, args.eval_single_head, 
-                    args.do_sampling, args.mem_size, args.train_iters, args.batch_size, args.num_runs)
-            # Close the session
-            sess.close()
+        # Delete the model
+        del model
 
-    # Compute the mean and std
-    acc_mean = runs.mean(0)
-    acc_std = runs.std(0)
+        # Compute the mean and std
+        acc_mean = runs.mean(0)
+        acc_std = runs.std(0)
 
-    # Store all the results in one dictionary to process later
-    exper_acc = dict(mean=acc_mean, std=acc_std)
+        # Store all the results in one dictionary to process later
+        exper_acc = dict(mean=acc_mean, std=acc_std)
 
-    # If cross-validation flag is enabled, store the stuff in a text file
-    if args.cross_validate_mode:
-        cross_validate_dump_file = args.log_dir + '/' + 'SPLIT_CUB_%s_%s'%(args.imp_method, args.optim) + '.txt'
-        with open(cross_validate_dump_file, 'a') as f:
-            f.write('ARCH: {} \t LR:{} \t LAMBDA: {} \t ACC: {}\n'.format(args.arch, args.learning_rate, args.synap_stgth, acc_mean[-1,:].mean()))
+        # If cross-validation flag is enabled, store the stuff in a text file
+        if args.cross_validate_mode:
+            cross_validate_dump_file = args.log_dir + '/' + 'SPLIT_CUB_%s_%s'%(args.imp_method, args.optim) + '.txt'
+            with open(cross_validate_dump_file, 'a') as f:
+                f.write('ARCH: {} \t LR:{} \t LAMBDA: {} \t ACC: {}\n'.format(args.arch, lr, args.synap_stgth, acc_mean[-1,:].mean()))
 
-    # Store the experiment output to a file
-    snapshot_experiment_eval(args.log_dir, experiment_id, exper_acc)
+        # Store the experiment output to a file
+        snapshot_experiment_eval(args.log_dir, experiment_id, exper_acc)
 
 if __name__ == '__main__':
     main()

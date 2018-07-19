@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 from IPython import display
 from utils import clone_variable_list, create_fc_layer, create_conv_layer
 from utils.resnet_utils import _conv, _fc, _bn, _residual_block, _residual_block_first 
+from utils.vgg_utils import vgg_conv_layer, vgg_fc_layer
 from utils.gem_utils import project2cone2
 
 PARAM_XI_STEP = 1e-3
@@ -69,12 +70,15 @@ class Model:
         self.train_step = tf.placeholder(dtype=tf.float32, shape=())
         self.train_phase = tf.placeholder(tf.bool, name='train_phase')
         self.is_CUB = is_CUB # To use a different (standard one) ResNet-18 for CUB
-        if self.is_CUB:
+        if x_test is not None:
             # If CUB datatset then use augmented x (x_train) for training and non-augmented x (x_test) for testing
             self.x = tf.cond(self.train_phase, lambda: tf.identity(x_train), lambda: tf.identity(x_test))
+            train_shape = x_train.get_shape().as_list()
+            x = tf.reshape(self.x, [-1, train_shape[1], train_shape[2], train_shape[3]])
         else:
             # We don't use data augmentation for other datasets
             self.x = x_train
+            x = self.x
 
         # Class attributes for zero shot transfer
         self.class_attr = attr
@@ -117,9 +121,9 @@ class Model:
         self.gem_reg_grads = []
 
         if self.class_attr is not None:
-            self.loss_and_train_ops_for_attr_vector()
+            self.loss_and_train_ops_for_attr_vector(x, self.y_)
         else:
-            self.loss_and_train_ops_for_one_hot_vector()
+            self.loss_and_train_ops_for_one_hot_vector(x, self.y_)
 
         # Set the operations to reset the optimier when needed
         self.reset_optimizer_ops()
@@ -127,24 +131,28 @@ class Model:
 ####################################################################################
 #### Internal APIs of the class. These should not be called/ exposed externally ####
 ####################################################################################
-    def loss_and_train_ops_for_one_hot_vector(self):
+    def loss_and_train_ops_for_one_hot_vector(self, x, y_):
         """
         Loss and training operations for the training of one-hot vector based classification model
         """
         # Define approproate network
         if self.network_arch == 'FC':
-            input_feature_dim = int(self.x.get_shape()[1])
+            input_feature_dim = int(x.get_shape()[1])
             layer_dims = [input_feature_dim, 256, 256, self.total_classes]
             self.fc_variables(layer_dims)
-            logits = self.fc_feedforward(self.x, self.weights, self.biases)
+            logits = self.fc_feedforward(x, self.weights, self.biases)
 
         elif self.network_arch == 'CNN':
-            num_channels = int(self.x.get_shape()[-1])
-            self.image_size = int(self.x.get_shape()[1])
+            num_channels = int(x.get_shape()[-1])
+            self.image_size = int(x.get_shape()[1])
             kernels = [3, 3, 3, 3, 3]
             depth = [num_channels, 32, 32, 64, 64, 512]
             self.conv_variables(kernels, depth)
-            logits = self.conv_feedforward(self.x, self.weights, self.biases, apply_dropout=True)
+            logits = self.conv_feedforward(x, self.weights, self.biases, apply_dropout=True)
+
+        elif self.network_arch == 'VGG':
+            # VGG-16
+            logits = self.vgg_16_conv_feedforward(x)
             
         elif self.network_arch == 'RESNET':
             if self.is_CUB:
@@ -157,7 +165,7 @@ class Model:
                 kernels = [3, 3, 3, 3, 3]
                 filters = [20, 20, 40, 80, 160]
                 strides = [1, 0, 2, 2, 2]
-            logits = self.resnet18_conv_feedforward(self.x, kernels, filters, strides)
+            logits = self.resnet18_conv_feedforward(x, kernels, filters, strides)
 
         # Prune the predictions to only include the classes for which
         # the training data is present
@@ -171,12 +179,12 @@ class Model:
 
         # Different entropy measures/ loss definitions
         self.mse = 2.0*tf.nn.l2_loss(self.pruned_logits) # tf.nn.l2_loss computes sum(T**2)/ 2
-        self.weighted_entropy = tf.reduce_mean(tf.losses.softmax_cross_entropy(self.y_, 
+        self.weighted_entropy = tf.reduce_mean(tf.losses.softmax_cross_entropy(y_, 
             self.pruned_logits, self.sample_weights, reduction=tf.losses.Reduction.NONE))
-        self.unweighted_entropy = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=self.y_, 
+        self.unweighted_entropy = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=y_, 
             logits=self.pruned_logits))
         # TODO
-        #self.unweighted_entropy = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(labels=self.y_, 
+        #self.unweighted_entropy = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(labels=y_, 
         #    logits=self.pruned_logits))
 
         # Create operations for loss and gradient calculation
@@ -211,27 +219,32 @@ class Model:
         self.merged_summary = tf.summary.merge_all()
 
         # Accuracy measure
-        self.correct_predictions = tf.equal(tf.argmax(self.pruned_logits, 1), tf.argmax(self.y_, 1))
+        self.correct_predictions = tf.equal(tf.argmax(self.pruned_logits, 1), tf.argmax(y_, 1))
         self.accuracy = tf.reduce_mean(tf.cast(self.correct_predictions, tf.float32))
    
-    def loss_and_train_ops_for_attr_vector(self): 
+    def loss_and_train_ops_for_attr_vector(self, x, y_): 
         """
         Loss and training operations for the training of joined embedding model
         """
         # Define approproate network
         if self.network_arch == 'FC':
-            input_feature_dim = int(self.x.get_shape()[1])
+            input_feature_dim = int(x.get_shape()[1])
             layer_dims = [input_feature_dim, 256, 256, self.total_classes]
             self.fc_variables(layer_dims)
-            logits = self.fc_feedforward(self.x, self.weights, self.biases)
+            logits = self.fc_feedforward(x, self.weights, self.biases)
 
         elif self.network_arch == 'CNN':
-            num_channels = int(self.x.get_shape()[-1])
-            self.image_size = int(self.x.get_shape()[1])
+            num_channels = int(x.get_shape()[-1])
+            self.image_size = int(x.get_shape()[1])
             kernels = [3, 3, 3, 3, 3]
             depth = [num_channels, 32, 32, 64, 64, 512]
             self.conv_variables(kernels, depth)
-            logits = self.conv_feedforward(self.x, self.weights, self.biases, apply_dropout=True)
+            logits = self.conv_feedforward(x, self.weights, self.biases, apply_dropout=True)
+
+        elif self.network_arch == 'VGG':
+            # VGG-16
+            f_x = self.vgg_16_conv_feedforward(x)
+            attr_embed = self.get_attribute_embedding(self.class_attr)
             
         elif self.network_arch == 'RESNET':
             if self.is_CUB:
@@ -244,7 +257,7 @@ class Model:
                 kernels = [3, 3, 3, 3, 3]
                 filters = [20, 20, 40, 80, 160]
                 strides = [1, 0, 2, 2, 2]
-            f_x = self.resnet18_conv_feedforward(self.x, kernels, filters, strides)
+            f_x = self.resnet18_conv_feedforward(x, kernels, filters, strides)
             attr_embed = self.get_attribute_embedding(self.class_attr)
 
         # Create list of variables for storing different measures
@@ -257,7 +270,7 @@ class Model:
         attr_embed_normalized = tf.nn.l2_normalize(attr_embed, axis=1)
 
         self.similarity_kernel = self.triplet_loss_scale * tf.matmul(f_x_normalized, tf.transpose(attr_embed_normalized)) # B x C
-        self.triplet_softmax_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=self.y_, logits=self.similarity_kernel))
+        self.triplet_softmax_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=y_, logits=self.similarity_kernel))
 
         # Create operations for loss and gradient calculation
         self.loss_and_gradients(self.imp_method)
@@ -291,7 +304,7 @@ class Model:
         self.merged_summary = tf.summary.merge_all()
 
         # Accuracy measure
-        self.correct_predictions = tf.equal(tf.argmax(self.similarity_kernel, 1), tf.argmax(self.y_, 1))
+        self.correct_predictions = tf.equal(tf.argmax(self.similarity_kernel, 1), tf.argmax(y_, 1))
         self.accuracy = tf.reduce_mean(tf.cast(self.correct_predictions, tf.float32))
    
     def fc_variables(self, layer_dims):
@@ -406,14 +419,45 @@ class Model:
         Return:
             Logits of a VGG 16 network
         """
+        self.trainable_vars = []
         # Conv1
+        h = vgg_conv_layer(h, 3, 64, 1, self.trainable_vars, name='conv1_1')
+        h = vgg_conv_layer(h, 3, 64, 1, self.trainable_vars, name='conv1_2')
+        h = tf.nn.max_pool(h, ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding='SAME', name='pool1')
         # Conv2
+        h = vgg_conv_layer(h, 3, 128, 1, self.trainable_vars, name='conv2_1')
+        h = vgg_conv_layer(h, 3, 128, 1, self.trainable_vars, name='conv2_2')
+        h = tf.nn.max_pool(h, ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding='SAME', name='pool2')
         # Conv3
+        h = vgg_conv_layer(h, 3, 256, 1, self.trainable_vars, name='conv3_1')
+        h = vgg_conv_layer(h, 3, 256, 1, self.trainable_vars, name='conv3_2')
+        h = vgg_conv_layer(h, 3, 256, 1, self.trainable_vars, name='conv3_3')
+        h = tf.nn.max_pool(h, ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding='SAME', name='pool3')
         # Conv4
+        h = vgg_conv_layer(h, 3, 512, 1, self.trainable_vars, name='conv4_1')
+        h = vgg_conv_layer(h, 3, 512, 1, self.trainable_vars, name='conv4_2')
+        h = vgg_conv_layer(h, 3, 512, 1, self.trainable_vars, name='conv4_3')
+        h = tf.nn.max_pool(h, ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding='SAME', name='pool4')
         # Conv5
+        h = vgg_conv_layer(h, 3, 512, 1, self.trainable_vars, name='conv5_1')
+        h = vgg_conv_layer(h, 3, 512, 1, self.trainable_vars, name='conv5_2')
+        h = vgg_conv_layer(h, 3, 512, 1, self.trainable_vars, name='conv5_3')
+        h = tf.nn.max_pool(h, ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding='SAME', name='pool5')
+
+        # FC layers
+        shape = h.get_shape().as_list()
+        h = tf.reshape(h, [-1, shape[1] * shape[2] * shape[3]])
         # fc6
+        h = vgg_fc_layer(h, 4096, self.trainable_vars, apply_relu=True, name='fc6')
         # fc7
+        h = vgg_fc_layer(h, 4096, self.trainable_vars, apply_relu=True, name='fc7')
         # fc8
+        if self.class_attr is not None:
+            logits = vgg_fc_layer(h, self.attr_dims, self.trainable_vars, apply_relu=False, name='fc8')
+        else:
+            logits = vgg_fc_layer(h, self.total_classes, self.trainable_vars, apply_relu=False, name='fc8')
+
+        return logits
 
 
     def resnet18_conv_feedforward(self, h, kernels, filters, strides):

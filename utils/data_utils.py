@@ -18,7 +18,6 @@ import cv2
 
 #IMG_MEAN = np.array((104.00698793,116.66876762,122.67891434), dtype=np.float32)
 IMG_MEAN = np.array((103.94,116.78,123.68), dtype=np.float32)
-
 ############################################################
 ### Data augmentation utils ################################
 ############################################################
@@ -129,6 +128,7 @@ def _CUB_get_data(data_dir, train_list_file, test_list_file, img_height, img_wid
     dataset['train'].append(train_label)
     dataset['test'].append(test_img)
     dataset['test'].append(test_label)
+
     return dataset
 
 
