@@ -1,13 +1,14 @@
 *.pt
-*.txt
 *.pyc
 *.pdf
 *.tar.gz
 *.npz
 *.swp
+*tmp_*
 *MNIST_data*
 *CIFAR_data*
 *CUB_data*
+*AWA_data*
 *snapshots*
 *resnet-18-pretrained*
 *_experiment*
