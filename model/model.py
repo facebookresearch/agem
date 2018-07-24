@@ -55,7 +55,7 @@ class Model:
     """
 
     def __init__(self, x_train, y_, num_tasks, opt, imp_method, synap_stgth, fisher_update_after, fisher_ema_decay, network_arch='FC', 
-            is_CUB=False, x_test=None, attr=None):
+            is_ATT_DATASET=False, x_test=None, attr=None):
         """
         Instantiate the model
         """
@@ -69,7 +69,7 @@ class Model:
         self.training_iters = tf.placeholder(dtype=tf.float32, shape=())
         self.train_step = tf.placeholder(dtype=tf.float32, shape=())
         self.train_phase = tf.placeholder(tf.bool, name='train_phase')
-        self.is_CUB = is_CUB # To use a different (standard one) ResNet-18 for CUB
+        self.is_ATT_DATASET = is_ATT_DATASET # To use a different (standard one) ResNet-18 for CUB
         if x_test is not None:
             # If CUB datatset then use augmented x (x_train) for training and non-augmented x (x_test) for testing
             self.x = tf.cond(self.train_phase, lambda: tf.identity(x_train), lambda: tf.identity(x_test))
@@ -155,7 +155,7 @@ class Model:
             logits = self.vgg_16_conv_feedforward(x)
             
         elif self.network_arch == 'RESNET':
-            if self.is_CUB:
+            if self.is_ATT_DATASET:
                 # Standard ResNet-18
                 kernels = [7, 3, 3, 3, 3]
                 filters = [64, 64, 128, 256, 512]
@@ -247,7 +247,7 @@ class Model:
             attr_embed = self.get_attribute_embedding(self.class_attr)
             
         elif self.network_arch == 'RESNET':
-            if self.is_CUB:
+            if self.is_ATT_DATASET:
                 # Standard ResNet-18
                 kernels = [7, 3, 3, 3, 3]
                 filters = [64, 64, 128, 256, 512]
@@ -270,6 +270,7 @@ class Model:
         attr_embed_normalized = tf.nn.l2_normalize(attr_embed, axis=1)
 
         self.similarity_kernel = self.triplet_loss_scale * tf.matmul(f_x_normalized, tf.transpose(attr_embed_normalized)) # B x C
+        self.mse = 2.0*tf.nn.l2_loss(self.similarity_kernel) # tf.nn.l2_loss computes sum(T**2)/ 2
         self.triplet_softmax_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=y_, logits=self.similarity_kernel))
 
         # Create operations for loss and gradient calculation
@@ -479,15 +480,15 @@ class Model:
         h = _residual_block(h, self.trainable_vars, self.train_phase, name='conv2_2')
 
         # Conv3_x
-        h = _residual_block_first(h, filters[2], strides[2], self.trainable_vars, self.train_phase, name='conv3_1', is_CUB=self.is_CUB)
+        h = _residual_block_first(h, filters[2], strides[2], self.trainable_vars, self.train_phase, name='conv3_1', is_ATT_DATASET=self.is_ATT_DATASET)
         h = _residual_block(h, self.trainable_vars, self.train_phase, name='conv3_2')
 
         # Conv4_x
-        h = _residual_block_first(h, filters[3], strides[3], self.trainable_vars, self.train_phase, name='conv4_1', is_CUB=self.is_CUB)
+        h = _residual_block_first(h, filters[3], strides[3], self.trainable_vars, self.train_phase, name='conv4_1', is_ATT_DATASET=self.is_ATT_DATASET)
         h = _residual_block(h, self.trainable_vars, self.train_phase, name='conv4_2')
 
         # Conv5_x
-        h = _residual_block_first(h, filters[4], strides[4], self.trainable_vars, self.train_phase, name='conv5_1', is_CUB=self.is_CUB)
+        h = _residual_block_first(h, filters[4], strides[4], self.trainable_vars, self.train_phase, name='conv5_1', is_ATT_DATASET=self.is_ATT_DATASET)
         h = _residual_block(h, self.trainable_vars, self.train_phase, name='conv5_2')
 
         # Apply average pooling
@@ -541,7 +542,7 @@ class Model:
         """
         # ***** DON't USE THIS WITH MULTI-HEAD SETTING SINCE THIS WILL UPDATE ALL THE WEIGHTS *****
         # If CNN arch, then use the weight decay
-        if self.is_CUB:
+        if self.is_ATT_DATASET:
             self.unweighted_entropy += tf.add_n([0.0005 * tf.nn.l2_loss(v) for v in self.trainable_vars if 'weights' in v.name or 'kernel' in v.name])
         """
 
@@ -755,7 +756,10 @@ class Model:
 
         Returns:
         """
-        ders = tf.gradients(self.unweighted_entropy, self.trainable_vars)
+        if self.class_attr is not None:
+            ders = tf.gradients(self.triplet_softmax_loss, self.trainable_vars)
+        else:
+            ders = tf.gradients(self.unweighted_entropy, self.trainable_vars)
         fisher_ema_at_step_ops = []
         fisher_accumulate_at_step_ops = []
 
@@ -895,14 +899,15 @@ class Model:
         # big_omegas reliably
         sess.run(self.set_star_vars)
 
-    def task_updates(self, sess, task, train_x, train_labels):
+    def task_updates(self, sess, task, train_x, train_labels, num_classes_per_task=10, class_attr=None):
         """
         Updates different variables when a task is completed
         Args:
             sess                TF session
             task                Task ID
             train_x             Training images for the task 
-            train_labels        Labels in the task 
+            train_labels        Labels in the task
+            class_attr          Class attributes (only needed for ZST transfer)
         Returns:
         """
         if self.imp_method == 'VAN':
@@ -956,16 +961,27 @@ class Model:
         elif self.imp_method == 'MAS':
             # zero out any previous values
             sess.run(self.reset_hebbian_scores)
-            # Logits mask
-            logit_mask = np.zeros(self.total_classes)
-            logit_mask[train_labels] = 1.0
+            if self.class_attr is not None:
+                # Define mask based on the class attributes
+                masked_class_attrs = np.zeros_like(class_attr)
+                attr_offset = task * num_classes_per_task
+                masked_class_attrs[attr_offset:attr_offset+num_classes_per_task] = class_attr[attr_offset:attr_offset+num_classes_per_task]
+            else:
+                # Logits mask
+                logit_mask = np.zeros(self.total_classes)
+                logit_mask[train_labels] = 1.0
+
             # Loop over the entire training dataset to compute the parameter importance
-            batch_size = 100
+            batch_size = 10
             num_samples = train_x.shape[0]
             for iters in range(num_samples// batch_size):
                 offset = iters * batch_size
-                sess.run(self.accumulate_hebbian_scores, feed_dict={self.x: train_x[offset:offset+batch_size], self.keep_prob: 1.0, 
-                    self.output_mask: logit_mask, self.train_phase: False})
+                if self.class_attr is not None:
+                    sess.run(self.accumulate_hebbian_scores, feed_dict={self.x: train_x[offset:offset+batch_size], self.keep_prob: 1.0, 
+                        self.class_attr: masked_class_attrs, self.train_phase: False})
+                else:
+                    sess.run(self.accumulate_hebbian_scores, feed_dict={self.x: train_x[offset:offset+batch_size], self.keep_prob: 1.0, 
+                        self.output_mask: logit_mask, self.train_phase: False})
 
             # Average the hebbian scores across the training examples
             sess.run(self.average_hebbian_scores, feed_dict={self.train_samples: num_samples})

@@ -94,7 +94,7 @@ def _residual_block(x, trainable_vars, train_phase, apply_relu=True, name="unit"
 
     return x
 
-def _residual_block_first(x, out_channels, strides, trainable_vars, train_phase, apply_relu=True, name="unit", is_CUB=False):
+def _residual_block_first(x, out_channels, strides, trainable_vars, train_phase, apply_relu=True, name="unit", is_ATT_DATASET=False):
     """
     A generic ResNet Block
     """
@@ -108,7 +108,7 @@ def _residual_block_first(x, out_channels, strides, trainable_vars, train_phase,
                 shortcut = tf.nn.max_pool(x, [1, strides, strides, 1], [1, strides, strides, 1], 'VALID')
         else:
             shortcut = _conv(x, 1, out_channels, strides, trainable_vars, name="shortcut")
-            if not is_CUB:
+            if not is_ATT_DATASET:
                 shortcut = _bn(shortcut, trainable_vars, train_phase, name="bn_0")
 
         # Residual block

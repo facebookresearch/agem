@@ -1,5 +1,5 @@
 """
-Training script for split CUB experiment.
+Training script for split AWA experiment.
 """
 from __future__ import print_function
 
@@ -14,7 +14,7 @@ import tensorflow as tf
 from copy import deepcopy
 from six.moves import cPickle as pickle
 
-from utils.data_utils import image_scaling, random_crop_and_pad_image, random_horizontal_flip, construct_split_cub
+from utils.data_utils import image_scaling, random_crop_and_pad_image, random_horizontal_flip, construct_split_awa
 from utils.utils import get_sample_weights, sample_from_dataset, concatenate_datasets, samples_for_each_class, sample_from_dataset_icarl
 from utils.vis_utils import plot_acc_multiple_runs, plot_histogram, snapshot_experiment_meta_data, snapshot_experiment_eval
 from model import Model
@@ -28,7 +28,7 @@ from model import Model
 NUM_RUNS = 5           # Number of experiments to average over
 TRAIN_ITERS = 2000      # Number of training iterations per task
 BATCH_SIZE = 16
-LEARNING_RATE = 0.1
+LEARNING_RATE = 0.1    
 RANDOM_SEED = 1234
 VALID_OPTIMS = ['SGD', 'MOMENTUM', 'ADAM']
 OPTIM = 'SGD'
@@ -38,32 +38,37 @@ VALID_ARCHS = ['CNN', 'VGG', 'RESNET']
 ARCH = 'RESNET'
 
 ## Model options
-#MODELS = ['VAN', 'PI', 'EWC', 'MAS', 'RWALK', 'GEM'] #List of valid models
-MODELS = ['VAN', 'PI', 'EWC', 'MAS', 'RWALK'] #List of valid models
+#MODELS = ['VAN', 'PI', 'EWC', 'MAS', 'RWALK', 'GEM'] #List of valid models 
+MODELS = ['VAN', 'PI', 'EWC', 'MAS', 'RWALK'] #List of valid models 
 IMP_METHOD = 'EWC'
 SYNAP_STGTH = 75000
 FISHER_EMA_DECAY = 0.9      # Exponential moving average decay factor for Fisher computation (online Fisher)
-FISHER_UPDATE_AFTER = 50    # Number of training iterations for which the F_{\theta}^t is computed (see Eq. 10 in RWalk paper)
+FISHER_UPDATE_AFTER = 50    # Number of training iterations for which the F_{\theta}^t is computed (see Eq. 10 in RWalk paper) 
 MEMORY_SIZE_PER_TASK = 25   # Number of samples per task
 IMG_HEIGHT = 224
 IMG_WIDTH = 224
 IMG_CHANNELS = 3
-TOTAL_CLASSES = 200          # Total number of classes in the dataset
+TOTAL_CLASSES = 50          # Total number of classes in the dataset 
 
 ## Logging, saving and testing options
-LOG_DIR = './split_cub_results'
-SNAPSHOT_DIR = './cub_snapshots/sgd'
+LOG_DIR = './split_awa_results'
+SNAPSHOT_DIR = './awa_snapshots/sgd'
 SAVE_MODEL_PARAMS = False
+RESNET18_IMAGENET_CHECKPOINT = './resnet-18-pretrained-imagenet/model.ckpt'
+
 ## Evaluation options
 
 ## Task split
 NUM_TASKS = 10
 
 ## Dataset specific options
-DATA_DIR='CUB_data/CUB_200_2011/images'
-CUB_TRAIN_LIST = './dataset_lists/CUB_train_list.txt'
-CUB_TEST_LIST = './dataset_lists/CUB_test_list.txt'
-RESNET18_IMAGENET_CHECKPOINT = './resnet-18-pretrained-imagenet/model.ckpt'
+DATA_DIR= './AWA_data/Animals_with_Attributes2/'
+AWA_TRAIN_LIST = './dataset_lists/AWA_train_list.txt'
+AWA_VAL_LIST = './dataset_lists/AWA_val_list.txt'
+AWA_TEST_LIST = './dataset_lists/AWA_test_list.txt'
+#AWA_TRAIN_LIST = './dataset_lists/tmp_list_awa.txt'
+#AWA_VAL_LIST = './dataset_lists/tmp_list_awa.txt'
+#AWA_TEST_LIST = './dataset_lists/tmp_list_awa.txt'
 
 # Define function to load/ store training weights. We will use ImageNet initialization later on
 def save(saver, sess, logdir, step):
@@ -100,7 +105,7 @@ def get_arguments():
     Returns:
       A list of parsed arguments.
     """
-    parser = argparse.ArgumentParser(description="Script for split CUB experiment.")
+    parser = argparse.ArgumentParser(description="Script for split AWA experiment.")
     parser.add_argument("--cross-validate-mode", action="store_true",
             help="If option is chosen then enable the cross validation of the learning rate")
     parser.add_argument("--train-single-epoch", action="store_true", 
@@ -135,8 +140,8 @@ def get_arguments():
     parser.add_argument("--mem-size", type=int, default=MEMORY_SIZE_PER_TASK,
                        help="Number of samples per class from previous tasks.")
     parser.add_argument("--data-dir", type=str, default=DATA_DIR,
-                       help="Directory from where the CUB data will be read.\
-                               NOTE: Provide path till <CUB_DIR>/images")
+                       help="Directory from where the AWA data will be read.\
+                               NOTE: Provide path till <AWA_DIR>/Animals_with_Attributes2")
     parser.add_argument("--init-checkpoint", type=str, default=RESNET18_IMAGENET_CHECKPOINT,
                        help="Path to TF checkpoint file or npz file containing initialization for ImageNet.\
                                NOTE: NPZ file for VGG and TF checkpoint for ResNet")
@@ -206,6 +211,13 @@ def train_task_sequence(model, sess, saver, datasets, task_labels, cross_validat
         i_am_increasing = 0
         my_threshold = 4
 
+        # Compute the maximum size of batch dimension
+        task_num_samples = []
+        for t in range(len(datasets)):
+            task_num_samples.append(datasets[t]['train']['images'].shape[0])
+        max_task_samples = np.array(task_num_samples).max()
+        max_batch_dimension = (max_task_samples + batch_size - 1) //  batch_size
+
         # Training loop for all the tasks
         for task in range(len(datasets)):
             print('\t\tTask %d:'%(task))
@@ -263,16 +275,27 @@ def train_task_sequence(model, sess, saver, datasets, task_labels, cross_validat
             task_sample_weights = task_sample_weights[perm]
 
             # Array to store accuracies when training for task T
-            ftask = []
+            if cross_validate_mode:
+                # Because we will evalaute at the end
+                ftask = 0
+            elif train_single_epoch:
+                # Because we will evaluate after every mini-batch of every task
+                ftask = np.zeros([max_batch_dimension+1, NUM_TASKS])
+                batch_dim_count = 0
+            else:
+                # Because we will evaluate after every task
+                ftask = []
 
             # Training loop for task T
             for iters in range(num_iters):
-
                 if train_single_epoch and not cross_validate_mode:
-                    if (iters < 10) or (iters % 5 == 0):
+                    #if (iters <= 50 and iters % 5 == 0) or (iters > 50 and iters % 50 == 0):
+                    if (iters < 10) or (iters % 10 == 0): # Every batch for first 10, then every 10-th batch
                         # Snapshot the current performance across all tasks after each mini-batch
                         fbatch = test_task_sequence(model, sess, datasets, task_labels, cross_validate_mode, eval_single_head=eval_single_head)
-                        ftask.append(fbatch)
+                        ftask[batch_dim_count] = fbatch
+                        # Increment the batch_dim_count
+                        batch_dim_count += 1
                         # Set the output labels over which the model needs to be trained 
                         logit_mask[:] = 0
                         if do_sampling:
@@ -363,7 +386,7 @@ def train_task_sequence(model, sess, saver, datasets, task_labels, cross_validat
                         model.train, model.update_small_omega, model.reg_loss], feed_dict=feed_dict)
 
 
-                if (iters % 10 == 0):
+                if (iters % 100 == 0):
                     print('Step {:d} {:.3f}'.format(iters, loss))
 
                 if (math.isnan(loss)):
@@ -386,7 +409,6 @@ def train_task_sequence(model, sess, saver, datasets, task_labels, cross_validat
                 """
 
             print('\t\t\t\tTraining for Task%d done!'%(task))
-
             if break_training:
                 break
 
@@ -437,7 +459,7 @@ def train_task_sequence(model, sess, saver, datasets, task_labels, cross_validat
                     ftask = test_task_sequence(model, sess, datasets, task_labels, cross_validate_mode, eval_single_head=eval_single_head)
             elif train_single_epoch: 
                 fbatch = test_task_sequence(model, sess, datasets, task_labels, cross_validate_mode, eval_single_head=eval_single_head)
-                ftask.append(fbatch)
+                ftask[batch_dim_count] = fbatch 
             else:
                 # Multi-epoch training, so compute accuracy at the end
                 ftask = test_task_sequence(model, sess, datasets, task_labels, cross_validate_mode, eval_single_head=eval_single_head)
@@ -474,7 +496,7 @@ def test_task_sequence(model, sess, test_data, test_tasks, cross_validate_mode, 
     list_acc = []
 
     if cross_validate_mode:
-        test_set = 'test'
+        test_set = 'validation'
     else:
         test_set = 'test'
 
@@ -547,8 +569,8 @@ def main():
         offset = i*jmp
         task_labels.append(list(label_array[offset:offset+jmp]))
 
-    # Load the split CUB dataset
-    datasets = construct_split_cub(task_labels, args.data_dir, CUB_TRAIN_LIST, CUB_TEST_LIST, IMG_HEIGHT, IMG_WIDTH)
+    # Load the split AWA dataset
+    datasets = construct_split_awa(task_labels, args.data_dir, AWA_TRAIN_LIST, AWA_VAL_LIST, AWA_TEST_LIST, IMG_HEIGHT, IMG_WIDTH)
 
     if args.cross_validate_mode:
         models_list = MODELS
@@ -563,35 +585,35 @@ def main():
             if args.cross_validate_mode:
                 pass
             else:
-                learning_rate_list = [0.03] # => cross-validated learning rate for SGD
+                learning_rate_list = [0.01] # => cross-validated learning rate for SGD
         elif imp_method == 'PI':
             if args.cross_validate_mode:
-                synap_stgth_list = [0.01, 0.1, 1, 10, 100]
+                synap_stgth_list = [0.1, 1, 10, 100]
             else:
                 #synap_stgth_list = [args.synap_stgth]
-                synap_stgth_list = [0.1] # => cross-validated lambda
-                learning_rate_list = [0.03] # => cross-validaed learning rate for SGD
+                synap_stgth_list = [0.01] # => cross-validated lambda
+                learning_rate_list = [0.01] # => cross-validaed learning rate for SG
         elif imp_method == 'EWC':
             if args.cross_validate_mode:
                 synap_stgth_list = [1, 10, 1000, 10000, 100000]
             else:
                 #synap_stgth_list = [args.synap_stgth]
-                synap_stgth_list = [1] # => cross-validated lambda
-                learning_rate_list = [0.03] # => cross-validaed learning rate for SGD
+                synap_stgth_list = [10] # => cross-validated lambda
+                learning_rate_list = [0.01] # => cross-validaed learning rate for SG
         elif imp_method == 'MAS':
             if args.cross_validate_mode:
                 synap_stgth_list = [0.1, 1, 10, 100]
             else:
                 #synap_stgth_list = [args.synap_stgth]
-                synap_stgth_list = [0.1] # => cross-validated lambda
-                learning_rate_list = [0.03] # => cross-validaed learning rate for SGD
+                synap_stgth_list = [1] # => cross-validated lambda
+                learning_rate_list = [0.01] # => cross-validaed learning rate for SG
         elif imp_method == 'RWALK':
             if args.cross_validate_mode:
                 synap_stgth_list = [0.1, 1, 10, 100, 1000, 10000]
             else:
                 #synap_stgth_list = [args.synap_stgth]
-                synap_stgth_list = [1] # => cross-validated lambda
-                learning_rate_list = [0.03] # => cross-validaed learning rate for SGD
+                synap_stgth_list = [0.1] # => cross-validated lambda
+                learning_rate_list = [0.01] # => cross-validaed learning rate for SG
         elif imp_method == 'GEM':
             synap_stgth_list = [0]
 
@@ -599,7 +621,7 @@ def main():
             for lr in learning_rate_list:
                 # Generate the experiment key and store the meta data in a file
                 exper_meta_data = {'ARCH': args.arch,
-                        'DATASET': 'SPLIT_CUB',
+                        'DATASET': 'SPLIT_AWA',
                         'NUM_RUNS': args.num_runs,
                         'EVAL_SINGLE_HEAD': args.eval_single_head, 
                         'TRAIN_SINGLE_EPOCH': args.train_single_epoch, 
@@ -612,7 +634,7 @@ def main():
                         'BATCH_SIZE': args.batch_size, 
                         'EPS_MEMORY': args.do_sampling, 
                         'MEM_SIZE': args.mem_size}
-                experiment_id = "SPLIT_CUB_ONE_HOT_%s_%r_%r_%s_%s_%s_%s_%r_%s-"%(args.arch, args.eval_single_head, args.train_single_epoch, imp_method, 
+                experiment_id = "SPLIT_AWA_ONE_HOT_%s_%r_%r_%s_%s_%s_%s_%r_%s-"%(args.arch, args.eval_single_head, args.train_single_epoch, imp_method, 
                         str(synap_stgth).replace('.', '_'), str(lr).replace('.', '_'),
                         str(args.batch_size), args.do_sampling, str(args.mem_size)) + datetime.datetime.now().strftime("%y-%m-%d-%H-%M")
                 snapshot_experiment_meta_data(args.log_dir, experiment_id, exper_meta_data)
@@ -675,7 +697,7 @@ def main():
 
                 if args.cross_validate_mode:
                     # If cross-validation flag is enabled, store the stuff in a text file
-                    cross_validate_dump_file = args.log_dir + '/' + 'SPLIT_CUB_%s_%s'%(imp_method, args.optim) + '.txt'
+                    cross_validate_dump_file = args.log_dir + '/' + 'SPLIT_AWA_%s_%s'%(imp_method, args.optim) + '.txt'
                     with open(cross_validate_dump_file, 'a') as f:
                             f.write('ARCH: {} \t LR:{} \t LAMBDA: {} \t ACC: {}\n'.format(args.arch, lr, synap_stgth, runs))
                 else:

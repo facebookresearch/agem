@@ -64,6 +64,160 @@ def random_horizontal_flip(x):
     return random_flipped
 
 ############################################################
+### AWA dataset utils #####################################
+############################################################
+def _AWA_read_img_from_file(data_dir, file_name, img_height, img_width):
+    count = 0
+    imgs = []
+    labels = []
+
+    def dense_to_one_hot(labels_dense, num_classes=50):
+        num_labels = labels_dense.shape[0]
+        index_offset = np.arange(num_labels) * num_classes
+        labels_one_hot = np.zeros((num_labels, num_classes))
+        labels_one_hot.flat[index_offset + labels_dense.ravel()] = 1
+
+        return labels_one_hot
+
+    with open(file_name) as f:
+        for line in f:
+            img_name, img_label = line.split()
+            img_file = data_dir.rstrip('\/') + '/' + img_name
+            img = cv2.imread(img_file).astype(np.float32)
+            # HWC -> WHC, compatible with caffe weights
+            #img = np.transpose(img, [1, 0, 2])
+            img = cv2.resize(img, (img_width, img_height))
+            # Convert RGB to BGR
+            img_r, img_g, img_b = np.split(img, 3, axis=2)
+            img = np.concatenate((img_b, img_g, img_r), axis=2)
+            # Extract mean
+            img -= IMG_MEAN
+
+            imgs += [img]
+            labels += [int(img_label)]
+            count += 1
+
+            if count % 1000 == 0:
+                print 'Finish reading {:07d}'.format(count)
+
+    # Convert the labels to one-hot
+    y = dense_to_one_hot(np.array(labels))
+
+    return np.array(imgs), y
+
+
+def _AWA_get_data(data_dir, train_list_file, val_list_file, test_list_file, img_height, img_width):
+    """ Reads and parses examples from AWA dataset """
+
+    dataset = dict()
+    dataset['train'] = []
+    dataset['validation'] = []
+    dataset['test'] = []
+
+    num_val_img = 0   # you can change the number of validation images here TODO: Pass this as argument
+
+    train_img = []
+    train_label = []
+    validation_img = []
+    validation_label = []
+    test_img = []
+    test_label = []
+
+    # Read train, validation and test files
+    train_img, train_label = _AWA_read_img_from_file(data_dir, train_list_file, img_height, img_width)
+    validation_img, validation_label = _AWA_read_img_from_file(data_dir, val_list_file, img_height, img_width)
+    test_img, test_label = _AWA_read_img_from_file(data_dir, test_list_file, img_height, img_width)
+
+    dataset['train'].append(train_img)
+    dataset['train'].append(train_label)
+    dataset['validation'].append(validation_img)
+    dataset['validation'].append(validation_label)
+    dataset['test'].append(test_img)
+    dataset['test'].append(test_label)
+
+    return dataset
+
+
+def construct_split_awa(task_labels, data_dir, train_list_file, val_list_file, test_list_file, img_height, img_width, attr_file=None):
+    """
+    Construct Split AWA dataset
+
+    Args:
+        task_labels         Labels of different tasks
+        data_dir            Data directory from where the AWA dataset will be read
+        train_list_file     File containing names of training images
+        al_list_file        File containing names of val images
+        test_list_file      File containing names of test images
+        img_height          Height of image
+        img_width           Width of image
+        attr_file           File from where to load the attributes
+    """
+
+    # Get the awa dataset
+    awa_data = _AWA_get_data(data_dir, train_list_file, val_list_file, test_list_file, img_height, img_width)
+
+    # Get the attribute vector
+    if attr_file:
+        with open(attr_file, 'rb') as f:
+            awa_attr = pickle.load(f)
+
+    # Define a list for storing the data for different tasks
+    datasets = []
+
+    # Data splits
+    sets = ["train", "validation", "test"]
+
+    for task in task_labels:
+
+        for set_name in sets:
+            this_set = awa_data[set_name]
+
+            global_class_indices = np.column_stack(np.nonzero(this_set[1]))
+            count = 0
+
+            for cls in task:
+                if count == 0:
+                    class_indices = np.squeeze(global_class_indices[global_class_indices[:,1] ==
+                                                                    cls][:,np.array([True, False])])
+                else:
+                    class_indices = np.append(class_indices, np.squeeze(global_class_indices[global_class_indices[:,1] ==\
+                                                                                 cls][:,np.array([True, False])]))
+
+                count += 1
+
+            class_indices = np.sort(class_indices, axis=None)
+
+            if set_name == "train":
+                train = {
+                    'images':deepcopy(this_set[0][class_indices, :]),
+                    'labels':deepcopy(this_set[1][class_indices, :]),
+                }
+            elif set_name == "validation":
+                validation = {
+                    'images':deepcopy(this_set[0][class_indices, :]),
+                    'labels':deepcopy(this_set[1][class_indices, :]),
+                }
+            elif set_name == "test":
+                test = {
+                    'images':deepcopy(this_set[0][class_indices, :]),
+                    'labels':deepcopy(this_set[1][class_indices, :]),
+                }
+
+        awa = {
+            'train': train,
+            'validation': validation,
+            'test': test,
+        }
+
+        datasets.append(awa)
+
+    if attr_file:
+        return datasets, awa_attr 
+    else:
+        return datasets
+
+
+############################################################
 ### CUB dataset utils #####################################
 ############################################################
 def _CUB_read_img_from_file(data_dir, file_name, img_height, img_width):
@@ -143,7 +297,7 @@ def construct_split_cub(task_labels, data_dir, train_list_file, test_list_file, 
         test_list_file      File containing names of test images
         img_height          Height of image
         img_width           Width of image
-        get_attr            File from where to load the attributes
+        attr_fil            File from where to load the attributes
     """
 
     # Get the cub dataset

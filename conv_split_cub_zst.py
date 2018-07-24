@@ -38,8 +38,9 @@ VALID_ARCHS = ['CNN', 'VGG', 'RESNET']
 ARCH = 'RESNET'
 
 ## Model options
-MODELS = ['VAN', 'PI', 'EWC', 'MAS', 'GEM', 'RWALK'] #List of valid models 
-IMP_METHOD = 'EWC'
+#MODELS = ['VAN', 'PI', 'EWC', 'MAS', 'GEM', 'RWALK'] # List of valid models 
+MODELS = ['VAN', 'PI', 'EWC', 'MAS', 'RWALK'] # List of valid models 
+IMP_METHOD = 'MAS'
 SYNAP_STGTH = 75000
 FISHER_EMA_DECAY = 0.9      # Exponential moving average decay factor for Fisher computation (online Fisher)
 FISHER_UPDATE_AFTER = 50    # Number of training iterations for which the F_{\theta}^t is computed (see Eq. 10 in RWalk paper) 
@@ -56,15 +57,15 @@ SAVE_MODEL_PARAMS = False
 ## Evaluation options
 
 ## Task split
-NUM_TASKS = 1
+NUM_TASKS = 10
 
 ## Dataset specific options
 ATTR_DIMS = 312
 DATA_DIR='CUB_data/CUB_200_2011/images'
-CUB_TRAIN_LIST = 'dataset_lists/tmp_list.txt'
-CUB_TEST_LIST = 'dataset_lists/tmp_list.txt'
-#CUB_TRAIN_LIST = 'dataset_lists/CUB_train_list.txt'
-#CUB_TEST_LIST = 'dataset_lists/CUB_test_list.txt'
+#CUB_TRAIN_LIST = 'dataset_lists/tmp_list.txt'
+#CUB_TEST_LIST = 'dataset_lists/tmp_list.txt'
+CUB_TRAIN_LIST = 'dataset_lists/CUB_train_list.txt'
+CUB_TEST_LIST = 'dataset_lists/CUB_test_list.txt'
 CUB_ATTR_LIST = 'dataset_lists/CUB_attr_in_order.pickle'
 RESNET18_IMAGENET_CHECKPOINT = './resnet-18-pretrained-imagenet/model.ckpt'
 
@@ -142,13 +143,13 @@ def get_arguments():
                                NOTE: Provide path till <CUB_DIR>/images")
     parser.add_argument("--init-checkpoint", type=str, default=RESNET18_IMAGENET_CHECKPOINT,
                        help="TF checkpoint file containing initialization for ImageNet.\
-                               NOTE: Use this only with ResNet-18 architecture")
+                               NOTE: NPZ file for VGG and TF Checkpoint for ResNet")
     parser.add_argument("--log-dir", type=str, default=LOG_DIR,
                        help="Directory where the plots and model accuracies will be stored.")
     return parser.parse_args()
 
-def train_task_sequence(model, sess, saver, datasets, class_attrs, num_classes_per_task, task_labels, cross_validate_mode, train_single_epoch, eval_single_head, do_sampling, 
-        samples_per_class, train_iters, batch_size, num_runs):
+def train_task_sequence(model, sess, saver, datasets, class_attr, num_classes_per_task, task_labels, cross_validate_mode, train_single_epoch, eval_single_head, do_sampling, 
+        samples_per_class, train_iters, batch_size, num_runs, init_checkpoint):
     """
     Train and evaluate LLL system such that we only see a example once
     Args:
@@ -158,12 +159,29 @@ def train_task_sequence(model, sess, saver, datasets, class_attrs, num_classes_p
     # List to store accuracy for each run
     runs = []
 
+    break_training = 0
     # Loop over number of runs to average over
     for runid in range(num_runs):
         print('\t\tRun %d:'%(runid))
 
         # Initialize all the variables in the model
         sess.run(tf.global_variables_initializer())
+
+        # Load the variables from a checkpoint
+        if model.network_arch == 'RESNET':
+            # Define loader (weights which will be loaded from a checkpoint)
+            restore_vars = [v for v in model.trainable_vars if 'fc' not in v.name and 'attr_embed' not in v.name]
+            loader = tf.train.Saver(restore_vars)
+            load(loader, sess, init_checkpoint)
+        elif model.network_arch == 'VGG':
+            # Load the pretrained weights from the npz file
+            weights = np.load(init_checkpoint)
+            keys = sorted(weights.keys())
+            for i, key in enumerate(keys[:-2]): # Load everything except the last layer
+                sess.run(model.trainable_vars[i].assign(weights[key]))
+        else:
+            # Use the default initialization
+            pass
 
         # Run the init ops
         model.init_updates(sess)
@@ -222,8 +240,8 @@ def train_task_sequence(model, sess, saver, datasets, class_attrs, num_classes_p
 
             # Train a task observing sequence of data
             if train_single_epoch:
-                # TODO: Use a fix number of batches for now to avoid complicated logic while averaging accuracies
-                num_iters = num_train_examples// batch_size
+                # Ceiling operation
+                num_iters = (num_train_examples + batch_size - 1) // batch_size
             else:
                 num_iters = train_iters
 
@@ -238,17 +256,19 @@ def train_task_sequence(model, sess, saver, datasets, class_attrs, num_classes_p
             ftask = []
 
             # Attribute mask
-            masked_class_attrs = np.zeros_like(class_attrs)
+            masked_class_attrs = np.zeros_like(class_attr)
             attr_offset = task * num_classes_per_task
-            masked_class_attrs[attr_offset:attr_offset+num_classes_per_task] = class_attrs[attr_offset:attr_offset+num_classes_per_task]
+            masked_class_attrs[attr_offset:attr_offset+num_classes_per_task] = class_attr[attr_offset:attr_offset+num_classes_per_task]
 
             # Training loop for task T
             for iters in range(num_iters):
 
                 if train_single_epoch and not cross_validate_mode:
-                    if (iters <= 50 and iters % 5 == 0) or (iters > 50 and iters % 50 == 0):
+                    #if (iters <= 50 and iters % 5 == 0) or (iters > 50 and iters % 50 == 0):
+                    if (iters < 10) or (iters % 5 == 0):
                         # Snapshot the current performance across all tasks after each mini-batch
-                        fbatch = test_task_sequence(model, sess, datasets, class_attrs, num_classes_per_task, task_labels, cross_validate_mode, eval_single_head=eval_single_head)
+                        fbatch = test_task_sequence(model, sess, datasets, class_attr, num_classes_per_task, task_labels, 
+                                cross_validate_mode, eval_single_head=eval_single_head)
                         ftask.append(fbatch)
 
                 offset = (iters * batch_size) % (num_train_examples - batch_size)
@@ -321,13 +341,15 @@ def train_task_sequence(model, sess, saver, datasets, class_attrs, num_classes_p
                     _, _, _, _, loss = sess.run([model.set_tmp_fisher, model.weights_old_ops_grouped, 
                         model.train, model.update_small_omega, model.reg_loss], feed_dict=feed_dict)
 
-                if (iters % 100 == 0):
+                if (iters % 10 == 0):
                     print('Step {:d} {:.3f}'.format(iters, loss))
 
                 if (math.isnan(loss)):
                     print('ERROR: NaNs NaNs NaNs!!!')
-                    sys.exit(0)
+                    break_training = 1
+                    break
 
+                """
                 if (iters > 1000 and iters % 100 == 0):
                     # Check if the loss has become stagnant
                     if loss < loss_world.max():
@@ -339,13 +361,18 @@ def train_task_sequence(model, sess, saver, datasets, class_attrs, num_classes_p
                     if (i_am_increasing > my_threshold):
                         print('Training exited as loss was not decreasing on training set')
                         break
+                """
 
             print('\t\t\t\tTraining for Task%d done!'%(task))
+
+            if break_training:
+                break
 
             # Compute the inter-task updates, Fisher/ importance scores etc
             # Don't calculate the task updates for the last task
             if task < len(datasets) - 1:
-                model.task_updates(sess, task, task_train_images, task_labels[task]) # TODO: For MAS, should the gradients be for current task or all the previous tasks
+                # TODO: For MAS, should the gradients be for current task or all the previous tasks
+                model.task_updates(sess, task, task_train_images, task_labels[task], num_classes_per_task=num_classes_per_task, class_attr=class_attr) 
                 print('\t\t\t\tTask updates after Task%d done!'%(task))
 
                 # If importance method is 'GEM' then store the episodic memory for the task
@@ -382,40 +409,49 @@ def train_task_sequence(model, sess, saver, datasets, class_attrs, num_classes_p
 
                     print('\t\t\t\tEpisodic memory is saved for Task%d!'%(task))
 
-            if train_single_epoch and not cross_validate_mode: 
-                fbatch = test_task_sequence(model, sess, datasets, class_attrs, num_classes_per_task, task_labels, cross_validate_mode, eval_single_head=eval_single_head)
+            if cross_validate_mode:
+                if task == NUM_TASKS - 1:
+                    # List to store accuracy for all the tasks for the current trained model
+                    ftask = test_task_sequence(model, sess, datasets, class_attr, num_classes_per_task, task_labels, cross_validate_mode, eval_single_head=eval_single_head)
+            elif train_single_epoch:
+                fbatch = test_task_sequence(model, sess, datasets, class_attr, num_classes_per_task, task_labels, cross_validate_mode, eval_single_head=eval_single_head)
                 ftask.append(fbatch)
-                ftask = np.array(ftask)
             else:
-                # List to store accuracy for all the tasks for the current trained model
-                ftask = test_task_sequence(model, sess, datasets, class_attrs, num_classes_per_task, task_labels, True, eval_single_head=eval_single_head)
-                ftask = test_task_sequence(model, sess, datasets, class_attrs, num_classes_per_task, task_labels, cross_validate_mode, eval_single_head=eval_single_head)
+                # Multi-epoch training, so compute accuracy at the end
+                ftask = test_task_sequence(model, sess, datasets, class_attr, num_classes_per_task, task_labels, cross_validate_mode, eval_single_head=eval_single_head)
 
             if SAVE_MODEL_PARAMS:
                 save(saver, sess, SNAPSHOT_DIR, iters)
-            # Store the accuracies computed at task T in a list
-            evals.append(ftask)
+
+            if not cross_validate_mode:
+                # Store the accuracies computed at task T in a list
+                evals.append(np.array(ftask))
 
             # Reset the optimizer
             model.reset_optimizer(sess)
 
             #-> End for loop task
 
-        runs.append(np.array(evals))
+        if not cross_validate_mode:
+            runs.append(np.array(evals))
+
+        if break_training:
+            break
         # End for loop runid
+    if cross_validate_mode:
+        return np.mean(ftask)
+    else:
+        runs = np.array(runs)
+        return runs
 
-    runs = np.array(runs)
-
-    return runs
-
-def test_task_sequence(model, sess, test_data, class_attrs, num_classes_per_task, test_tasks, cross_validate_mode, eval_single_head=True):
+def test_task_sequence(model, sess, test_data, class_attr, num_classes_per_task, test_tasks, cross_validate_mode, eval_single_head=True):
     """
     Snapshot the current performance
     """
     list_acc = []
 
     if cross_validate_mode:
-        test_set = 'train'
+        test_set = 'test'
     else:
         test_set = 'test'
 
@@ -426,9 +462,9 @@ def test_task_sequence(model, sess, test_data, class_attrs, num_classes_per_task
     for task, labels in enumerate(test_tasks):
         if not eval_single_head:
             # Multi-head evaluation setting
-            masked_class_attrs = np.zeros_like(class_attrs)
+            masked_class_attrs = np.zeros_like(class_attr)
             attr_offset = task * num_classes_per_task
-            masked_class_attrs[attr_offset:attr_offset+num_classes_per_task] = class_attrs[attr_offset:attr_offset+num_classes_per_task]
+            masked_class_attrs[attr_offset:attr_offset+num_classes_per_task] = class_attr[attr_offset:attr_offset+num_classes_per_task]
     
         task_test_images = test_data[task][test_set]['images']
         task_test_labels = test_data[task][test_set]['labels']
@@ -454,10 +490,6 @@ def test_task_sequence(model, sess, test_data, class_attrs, num_classes_per_task
         # Mean accuracy on the task
         acc = total_corrects/ float(total_test_samples)
         list_acc.append(acc)
-        if cross_validate_mode:
-            print('Train acc {}'.format(acc))
-        else:
-            print('Test acc {}'.format(acc))
     
     return list_acc
 
@@ -486,25 +518,6 @@ def main():
         print('Log directory %s created!'%(args.log_dir))
         os.makedirs(args.log_dir)
 
-    # Generate the experiment key and store the meta data in a file
-    exper_meta_data = {'ARCH': args.arch,
-            'DATASET': 'SPLIT_CUB',
-            'NUM_RUNS': args.num_runs,
-            'EVAL_SINGLE_HEAD': args.eval_single_head, 
-            'TRAIN_SINGLE_EPOCH': args.train_single_epoch, 
-            'IMP_METHOD': args.imp_method, 
-            'SYNAP_STGTH': args.synap_stgth,
-            'FISHER_EMA_DECAY': args.fisher_ema_decay,
-            'FISHER_UPDATE_AFTER': args.fisher_update_after,
-            'OPTIM': args.optim, 
-            'LR': args.learning_rate, 
-            'BATCH_SIZE': args.batch_size, 
-            'EPS_MEMORY': args.do_sampling, 
-            'MEM_SIZE': args.mem_size}
-    experiment_id = "SPLIT_CUB_%s_%r_%r_%s_%s_%s_%r_%s-"%(args.arch, args.eval_single_head, args.train_single_epoch, args.imp_method, 
-            str(args.synap_stgth).replace('.', '_'), 
-            str(args.batch_size), args.do_sampling, str(args.mem_size)) + datetime.datetime.now().strftime("%y-%m-%d-%H-%M")
-    snapshot_experiment_meta_data(args.log_dir, experiment_id, exper_meta_data)
 
     # Get the task labels from the total number of tasks and full label space
     task_labels = []
@@ -516,86 +529,147 @@ def main():
         task_labels.append(list(label_array[offset:offset+jmp]))
 
     # Load the split CUB dataset
-    datasets, CUB_attr = construct_split_cub(task_labels, args.data_dir, CUB_TRAIN_LIST, CUB_TEST_LIST, IMG_HEIGHT, IMG_WIDTH, CUB_ATTR_LIST)
+    datasets, CUB_attr = construct_split_cub(task_labels, args.data_dir, CUB_TRAIN_LIST, CUB_TEST_LIST, IMG_HEIGHT, IMG_WIDTH, attr_file=CUB_ATTR_LIST)
 
-    # Variables to store the accuracies and standard deviations of the experiment
-    acc_mean = dict()
-    acc_std = dict()
-
-    # Reset the default graph
-    tf.reset_default_graph()
-    graph  = tf.Graph()
-    with graph.as_default():
-
-        # Set the random seed
-        tf.set_random_seed(RANDOM_SEED)
-
-        # Define Input and Output of the model
-        x = tf.placeholder(tf.float32, shape=[None, IMG_HEIGHT, IMG_WIDTH, IMG_CHANNELS])
-        y_ = tf.placeholder(tf.float32, shape=[None, TOTAL_CLASSES])
-        attr = tf.placeholder(tf.float32, shape=[TOTAL_CLASSES, ATTR_DIMS])
-
-        # Define ops for data augmentation
-        x_aug = image_scaling(x)
-        x_aug = random_crop_and_pad_image(x_aug, IMG_HEIGHT, IMG_WIDTH)
-
-        # Define the optimizer
-        if args.optim == 'ADAM':
-            opt = tf.train.AdamOptimizer(learning_rate=args.learning_rate)
-
-        elif args.optim == 'SGD':
-            opt = tf.train.GradientDescentOptimizer(learning_rate=args.learning_rate)
-
-        elif args.optim == 'MOMENTUM':
-            base_lr = tf.constant(args.learning_rate)
-            learning_rate = tf.scalar_mul(base_lr, tf.pow((1 - train_step / training_iters), OPT_POWER))
-            opt = tf.train.MomentumOptimizer(args.learning_rate, OPT_MOMENTUM)
-
-        # Create the Model/ contruct the graph
-        model = Model(x_aug, y_, NUM_TASKS, opt, args.imp_method, args.synap_stgth, args.fisher_update_after, 
-                args.fisher_ema_decay, network_arch=args.arch, is_CUB=True, x_test=x, attr=attr)
-
-        # Set up tf session and initialize variables.
-        config = tf.ConfigProto()
-        config.gpu_options.allow_growth = True
-
-        with tf.Session(config=config, graph=graph) as sess:
-
-            saver = tf.train.Saver(var_list=tf.global_variables(), max_to_keep=100)
-            if args.arch == 'RESNET':
-                # Now that the model is defined load the ImageNet weights
-                # TODO: Resolve this bn_0 issues. This was carried over from GEM version of ResNet-18
-                restore_vars = [v for v in tf.trainable_variables() if 'fc' not in v.name and 'attr_embed' not in v.name]
-                loader = tf.train.Saver(restore_vars)
-                load(loader, sess, args.init_checkpoint)
-
-            elif args.arch == 'VGG':
-                # Load the pretrained weights from the npz file
-                weights = np.load(args.init_checkpoint)
-                keys = sorted(weights.keys())
-                for i, key in enumerate(keys[:-2]): # Load everything except the last layer and attribute embedding layer
-                    sess.run(model.trainable_vars[i].assign(weights[key]))
-
-            runs = train_task_sequence(model, sess, saver, datasets, CUB_attr, num_classes_per_task, task_labels, args.cross_validate_mode, 
-                    args.train_single_epoch, args.eval_single_head, args.do_sampling, args.mem_size, args.train_iters, args.batch_size, args.num_runs)
-            # Close the session
-            sess.close()
-
-    # Compute the mean and std
-    acc_mean = runs.mean(0)
-    acc_std = runs.std(0)
-
-    # Store all the results in one dictionary to process later
-    exper_acc = dict(mean=acc_mean, std=acc_std)
-
-    # If cross-validation flag is enabled, store the stuff in a text file
     if args.cross_validate_mode:
-        cross_validate_dump_file = args.log_dir + '/' + 'SPLIT_CUB_%s_%s'%(args.imp_method, args.optim) + '.txt'
-        with open(cross_validate_dump_file, 'a') as f:
-            f.write('ARCH: {} \t LR:{} \t LAMBDA: {} \t ACC: {}\n'.format(args.arch, args.learning_rate, args.synap_stgth, acc_mean[-1,:].mean()))
+        models_list = MODELS
+        #learning_rate_list = [1, 0.3, 0.1, 0.03, 0.01, 0.003, 0.001, 0.0003, 0.0001] # => initial less refined list
+        learning_rate_list = [0.3, 0.1, 0.03] # => more refined list base on initial experiments
+    else:
+        #models_list = [args.imp_method]
+        #learning_rate_list = [args.learning_rate]
+        models_list = MODELS
+    for imp_method in models_list:
+        if imp_method == 'VAN':
+            synap_stgth_list = [0]
+            if args.cross_validate_mode:
+                pass
+            else:
+                learning_rate_list = [0.1] # => cross-validated learning-rate for SGD
+        elif imp_method == 'PI':
+            if args.cross_validate_mode:
+                synap_stgth_list = [0.01, 0.1, 1, 10, 100]
+            else:
+                #synap_stgth_list = [args.synap_stgth]
+                synap_stgth_list = [0.01] # => cross-validated lambda 
+                learning_rate_list = [0.1] # => cross-validated learning-rate for SGD
+        elif imp_method == 'EWC':
+            if args.cross_validate_mode:
+                synap_stgth_list = [1, 10, 1000, 10000, 100000]
+            else:
+                #synap_stgth_list = [args.synap_stgth]
+                synap_stgth_list = [10] # => cross-validated lambda
+                learning_rate_list = [0.1] # => cross-validated learning-rate for SGD
+        elif imp_method == 'MAS':
+            if args.cross_validate_mode:
+                synap_stgth_list = [0.1, 1, 10, 100]
+            else:
+                #synap_stgth_list = [args.synap_stgth]
+                synap_stgth_list = [0.1] # => cross-validated lambda
+                learning_rate_list = [0.03] # => cross-validated learning-rate for SGD
+        elif imp_method == 'RWALK':
+            if args.cross_validate_mode:
+                synap_stgth_list = [0.1, 1, 10, 100, 1000, 10000]
+            else:
+                #synap_stgth_list = [args.synap_stgth]
+                synap_stgth_list = [1] # => cross-validated lambda
+                learning_rate_list = [0.1] # => cross-validated learning-rate for SGD
+        elif imp_method == 'GEM':
+            synap_stgth_list = [0]
+        
+        for synap_stgth in synap_stgth_list:
+            for lr in learning_rate_list:
+                # Generate the experiment key and store the meta data in a file
+                exper_meta_data = {'ARCH': args.arch,
+                    'DATASET': 'SPLIT_CUB',
+                    'NUM_RUNS': args.num_runs,
+                    'EVAL_SINGLE_HEAD': args.eval_single_head, 
+                    'TRAIN_SINGLE_EPOCH': args.train_single_epoch, 
+                    'IMP_METHOD': imp_method, 
+                    'SYNAP_STGTH': synap_stgth,
+                    'FISHER_EMA_DECAY': args.fisher_ema_decay,
+                    'FISHER_UPDATE_AFTER': args.fisher_update_after,
+                    'OPTIM': args.optim, 
+                    'LR': lr, 
+                    'BATCH_SIZE': args.batch_size, 
+                    'EPS_MEMORY': args.do_sampling, 
+                    'MEM_SIZE': args.mem_size}
+                experiment_id = "SPLIT_CUB_ZST_%s_%r_%r_%s_%s_%s_%r_%s-"%(args.arch, args.eval_single_head, args.train_single_epoch, imp_method, 
+                        str(synap_stgth).replace('.', '_'), 
+                        str(args.batch_size), args.do_sampling, str(args.mem_size)) + datetime.datetime.now().strftime("%y-%m-%d-%H-%M")
+                snapshot_experiment_meta_data(args.log_dir, experiment_id, exper_meta_data)
 
-    # Store the experiment output to a file
-    snapshot_experiment_eval(args.log_dir, experiment_id, exper_acc)
+                # Variables to store the accuracies and standard deviations of the experiment
+                acc_mean = dict()
+                acc_std = dict()
+
+                # Reset the default graph
+                tf.reset_default_graph()
+                graph  = tf.Graph()
+                with graph.as_default():
+
+                    # Set the random seed
+                    tf.set_random_seed(RANDOM_SEED)
+
+                    # Define Input and Output of the model
+                    x = tf.placeholder(tf.float32, shape=[None, IMG_HEIGHT, IMG_WIDTH, IMG_CHANNELS])
+                    y_ = tf.placeholder(tf.float32, shape=[None, TOTAL_CLASSES])
+                    attr = tf.placeholder(tf.float32, shape=[TOTAL_CLASSES, ATTR_DIMS])
+
+                    if not args.train_single_epoch:
+                        # Define ops for data augmentation
+                        x_aug = image_scaling(x)
+                        x_aug = random_crop_and_pad_image(x_aug, IMG_HEIGHT, IMG_WIDTH)
+
+                    # Define the optimizer
+                    if args.optim == 'ADAM':
+                        opt = tf.train.AdamOptimizer(learning_rate=lr)
+
+                    elif args.optim == 'SGD':
+                        opt = tf.train.GradientDescentOptimizer(learning_rate=lr)
+
+                    elif args.optim == 'MOMENTUM':
+                        base_lr = tf.constant(lr)
+                        learning_rate = tf.scalar_mul(base_lr, tf.pow((1 - train_step / training_iters), OPT_POWER))
+                        opt = tf.train.MomentumOptimizer(lr, OPT_MOMENTUM)
+
+                    # Create the Model/ contruct the graph
+                    if args.train_single_epoch:
+                        # When training using a single epoch then there is no need for data augmentation
+                        model = Model(x, y_, NUM_TASKS, opt, imp_method, synap_stgth, args.fisher_update_after,
+                                args.fisher_ema_decay, network_arch=args.arch, is_ATT_DATASET=True, attr=attr)
+                    else:
+                        model = Model(x_aug, y_, NUM_TASKS, opt, imp_method, synap_stgth, args.fisher_update_after, 
+                                args.fisher_ema_decay, network_arch=args.arch, is_ATT_DATASET=True, x_test=x, attr=attr)
+
+                    # Set up tf session and initialize variables.
+                    config = tf.ConfigProto()
+                    config.gpu_options.allow_growth = True
+
+                    with tf.Session(config=config, graph=graph) as sess:
+                        saver = tf.train.Saver(var_list=tf.global_variables(), max_to_keep=100)
+                        runs = train_task_sequence(model, sess, saver, datasets, CUB_attr, num_classes_per_task, task_labels, args.cross_validate_mode, 
+                                args.train_single_epoch, args.eval_single_head, args.do_sampling, args.mem_size, args.train_iters, 
+                                args.batch_size, args.num_runs, args.init_checkpoint)
+                        # Close the session
+                        sess.close()
+
+                # Clean up
+                del model
+
+                if args.cross_validate_mode:
+                    # If cross-validation flag is enabled, store the stuff in a text file
+                    cross_validate_dump_file = args.log_dir + '/' + 'SPLIT_CUB_%s_%s'%(imp_method, args.optim) + '.txt'
+                    with open(cross_validate_dump_file, 'a') as f:
+                            f.write('ARCH: {} \t LR:{} \t LAMBDA: {} \t ACC: {}\n'.format(args.arch, lr, synap_stgth, runs))
+                else:
+                    # Compute the mean and std
+                    acc_mean = runs.mean(0)
+                    acc_std = runs.std(0)
+                    # Store all the results in one dictionary to process later
+                    exper_acc = dict(mean=acc_mean, std=acc_std)
+                    # Store the experiment output to a file
+                    snapshot_experiment_eval(args.log_dir, experiment_id, exper_acc)
 
 if __name__ == '__main__':
     main()
