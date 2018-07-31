@@ -1,5 +1,5 @@
 """
-Training script for split AWA experiment with zero shot transfer.
+Training script for split AWA experiment with hybrid learning.
 """
 from __future__ import print_function
 
@@ -41,7 +41,7 @@ ARCH = 'RESNET'
 #MODELS = ['VAN', 'PI', 'EWC', 'MAS', 'GEM', 'RWALK'] # List of valid models 
 #MODELS = ['VAN', 'PI', 'EWC', 'MAS', 'RWALK'] # List of valid models 
 MODELS = ['VAN', 'PI', 'RWALK'] # List of valid models 
-IMP_METHOD = 'VAN' #=> Expres on 6th window
+IMP_METHOD = 'VAN'
 SYNAP_STGTH = 75000
 FISHER_EMA_DECAY = 0.9      # Exponential moving average decay factor for Fisher computation (online Fisher)
 FISHER_UPDATE_AFTER = 50    # Number of training iterations for which the F_{\theta}^t is computed (see Eq. 10 in RWalk paper) 
@@ -50,6 +50,7 @@ IMG_HEIGHT = 224
 IMG_WIDTH = 224
 IMG_CHANNELS = 3
 TOTAL_CLASSES = 50          # Total number of classes in the dataset 
+HYBRID=True
 
 ## Logging, saving and testing options
 LOG_DIR = './split_awa_results'
@@ -108,7 +109,7 @@ def get_arguments():
     Returns:
       A list of parsed arguments.
     """
-    parser = argparse.ArgumentParser(description="Script for split AWA ZST experiment.")
+    parser = argparse.ArgumentParser(description="Script for split AWA Hybrid experiment.")
     parser.add_argument("--cross-validate-mode", action="store_true",
             help="If option is chosen then enable the cross validation of the learning rate")
     parser.add_argument("--train-single-epoch", action="store_true", 
@@ -205,13 +206,16 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, num_classes_pe
             last_task_x = None
             last_task_y_ = None
 
+        # Mask for softmax
+        logit_mask = np.zeros(TOTAL_CLASSES)
+
         # Loss array, for how many fix number of iterations we are fine with loss not decreasing
         loss_world = np.zeros([4])
         loss_world[:] = float("inf")
         i_am_increasing = 0
         my_threshold = 4
 
-        # Compute the maximium size of batch dimension
+        # Compute the maximum size of batch dimension
         task_num_samples = []
         for t in range(len(datasets)):
             task_num_samples.append(datasets[t]['train']['images'].shape[0])
@@ -250,11 +254,21 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, num_classes_pe
             num_train_examples = task_train_images.shape[0]
 
             # Train a task observing sequence of data
+            logit_mask[:] = 0
             if train_single_epoch:
                 # Ceiling operation
                 num_iters = (num_train_examples + batch_size - 1) // batch_size
+                if cross_validate_mode:
+                    if do_sampling:
+                        logit_mask[test_labels] = 1.0
+                    else:
+                        logit_mask[task_labels[task]] = 1.0
             else:
                 num_iters = train_iters
+                if do_sampling:
+                    logit_mask[test_labels] = 1.0
+                else:
+                    logit_mask[task_labels[task]] = 1.0
 
             # Randomly suffle the training examples
             perm = np.arange(num_train_examples)
@@ -292,19 +306,31 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, num_classes_pe
                         ftask[batch_dim_count] = fbatch
                         # Increment the batch_dim_count
                         batch_dim_count += 1
+                        # Set the output labels over which the model needs to be trained
+                        logit_mask[:] = 0
+                        if do_sampling:
+                            logit_mask[test_labels] = 1.0
+                        else:
+                            logit_mask[task_labels[task]] = 1.0
+                        
+                offset = iters * batch_size
+                if (offset+batch_size <= num_train_examples):
+                    residual = batch_size
+                else:
+                    residual = num_train_examples - offset
 
-                offset = (iters * batch_size) % (num_train_examples - batch_size)
-
-                feed_dict = {model.x: train_x[offset:offset+batch_size], model.y_: train_y[offset:offset+batch_size], 
+                feed_dict = {model.x: train_x[offset:offset+residual], model.y_: train_y[offset:offset+residual], 
                         model.class_attr: masked_class_attrs,
-                        model.sample_weights: task_sample_weights[offset:offset+batch_size],
+                        model.sample_weights: task_sample_weights[offset:offset+residual],
                         model.training_iters: num_iters, model.train_step: iters, model.keep_prob: 0.5, 
                         model.train_phase: True}
 
                 if model.imp_method == 'VAN':
+                    feed_dict[model.output_mask] = logit_mask
                     _, loss = sess.run([model.train, model.reg_loss], feed_dict=feed_dict)
 
                 elif model.imp_method == 'EWC':
+                    feed_dict[model.output_mask] = logit_mask
                     # If first iteration of the first task then set the initial value of the running fisher
                     if task == 0 and iters == 0:
                         sess.run([model.set_initial_running_fisher], feed_dict=feed_dict)
@@ -316,14 +342,19 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, num_classes_pe
                     _, _, loss = sess.run([model.set_tmp_fisher, model.train, model.reg_loss], feed_dict=feed_dict)
 
                 elif model.imp_method == 'PI':
+                    feed_dict[model.output_mask] = logit_mask
                     _, _, _, loss = sess.run([model.weights_old_ops_grouped, model.train, model.update_small_omega, 
                                               model.reg_loss], feed_dict=feed_dict)
 
                 elif model.imp_method == 'MAS':
+                    feed_dict[model.output_mask] = logit_mask
                     _, loss = sess.run([model.train, model.reg_loss], feed_dict=feed_dict)
 
                 elif model.imp_method == 'GEM':
                     if task == 0:
+                        logit_mask[:] = 0
+                        logit_mask[task_labels[task]] = 1.0
+                        feed_dict[model.output_mask] = logit_mask
                         # Normal application of gradients
                         _, loss = sess.run([model.train_first_task, model.reg_loss], feed_dict=feed_dict)
                     else:
@@ -331,11 +362,16 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, num_classes_pe
                         for prev_task in range(task):
                             # T-th task gradients
                             # Note that the model.train_phase flag is false to avoid updating the batch norm params while doing forward pass on prev tasks
+                            logit_mask[:] = 0
+                            logit_mask[task_labels[prev_task]] = 1.0
                             sess.run([model.task_grads, model.store_task_gradients], feed_dict={model.x: task_based_memory[prev_task]['images'], 
                                 model.y_: task_based_memory[prev_task]['labels'], model.task_id: prev_task, model.keep_prob: 1.0, 
-                                model.train_phase: False})
+                                model.output_mask: logit_mask, model.train_phase: False})
 
                         # Compute the gradient on the mini-batch of the current task
+                        logit_mask[:] = 0
+                        logit_mask[task_labels[task]] = 1.0
+                        feed_dict[model.output_mask] = logit_mask
                         feed_dict[model.task_id] = task
                         _, _,loss = sess.run([model.task_grads, model.store_task_gradients, model.reg_loss], feed_dict=feed_dict)
                         # Store the gradients
@@ -344,6 +380,7 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, num_classes_pe
                         sess.run(model.train_subseq_tasks)
 
                 elif model.imp_method == 'RWALK':
+                    feed_dict[model.output_mask] = logit_mask
                     # If first iteration of the first task then set the initial value of the running fisher
                     if task == 0 and iters == 0:
                         sess.run([model.set_initial_running_fisher], feed_dict=feed_dict)
@@ -363,7 +400,7 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, num_classes_pe
                     _, _, _, _, loss = sess.run([model.set_tmp_fisher, model.weights_old_ops_grouped, 
                         model.train, model.update_small_omega, model.reg_loss], feed_dict=feed_dict)
 
-                if (iters % 10 == 0):
+                if (iters % 100 == 0):
                     print('Step {:d} {:.3f}'.format(iters, loss))
 
                 if (math.isnan(loss)):
@@ -479,11 +516,15 @@ def test_task_sequence(model, sess, test_data, class_attr, num_classes_per_task,
 
     if eval_single_head:
         # Single-head evaluation setting
-        pass
+        logit_mask = np.ones(TOTAL_CLASSES)
+    else:
+        logit_mask = np.zeros(TOTAL_CLASSES)
 
     for task, labels in enumerate(test_tasks):
         if not eval_single_head:
             # Multi-head evaluation setting
+            logit_mask[:] = 0
+            logit_mask[labels] = 1.0
             masked_class_attrs = np.zeros_like(class_attr)
             attr_offset = task * num_classes_per_task
             masked_class_attrs[attr_offset:attr_offset+num_classes_per_task] = class_attr[attr_offset:attr_offset+num_classes_per_task]
@@ -498,16 +539,18 @@ def test_task_sequence(model, sess, test_data, class_attr, num_classes_per_task,
             feed_dict = {model.x: task_test_images[offset:offset+samples_at_a_time], 
                     model.y_: task_test_labels[offset:offset+samples_at_a_time],
                     model.class_attr: masked_class_attrs,
-                    model.keep_prob: 1.0, model.train_phase: False}
-            total_corrects += np.sum(sess.run(model.correct_predictions, feed_dict=feed_dict))
+                    model.keep_prob: 1.0, model.train_phase: False, model.output_mask: logit_mask}
+            corrects = sess.run(model.correct_predictions, feed_dict=feed_dict)
+            total_corrects += np.sum(corrects)
         # Compute the corrects on residuals
         offset = (i+1)*samples_at_a_time
         num_residuals = total_test_samples % samples_at_a_time 
         feed_dict = {model.x: task_test_images[offset:offset+num_residuals], 
                 model.y_: task_test_labels[offset:offset+num_residuals], 
                 model.class_attr: masked_class_attrs,
-                model.keep_prob: 1.0, model.train_phase: False}
-        total_corrects += np.sum(sess.run(model.correct_predictions, feed_dict=feed_dict))
+                model.keep_prob: 1.0, model.train_phase: False, model.output_mask: logit_mask}
+        corrects = sess.run(model.correct_predictions, feed_dict=feed_dict)
+        total_corrects += np.sum(corrects)
 
         # Mean accuracy on the task
         acc = total_corrects/ float(total_test_samples)
@@ -556,8 +599,7 @@ def main():
     if args.cross_validate_mode:
         models_list = MODELS
         #learning_rate_list = [1, 0.3, 0.1, 0.03, 0.01, 0.003, 0.001, 0.0003, 0.0001] # => initial less refined list
-        learning_rate_list = [1, 0.3, 0.1, 0.03, 0.01, 0.003, 0.001] # => more refined list base on initial experiments
-        #learning_rate_list = [0.003, 0.001, 0.0003, 0.0001] # => more refined list base on initial experiments
+        learning_rate_list = [0.03, 0.01, 0.003] # => Sanity test
     else:
         #models_list = [args.imp_method]
         #learning_rate_list = [args.learning_rate]
@@ -568,14 +610,14 @@ def main():
             if args.cross_validate_mode:
                 pass
             else:
-                learning_rate_list = [0.01] # => cross-validated learning-rate for SGD
+                learning_rate_list = [0.01] # => cross-validated learning-rate for SGD ZST, HYBRID
         elif imp_method == 'PI':
             if args.cross_validate_mode:
-                synap_stgth_list = [0.01, 0.1]
+                synap_stgth_list = [0.1, 1]
             else:
                 #synap_stgth_list = [args.synap_stgth]
-                synap_stgth_list = [0.1] # => cross-validated lambda 
-                learning_rate_list = [0.01] # => cross-validated learning-rate for SGD
+                synap_stgth_list = [0.1] # => cross-validated lambda ZST, HYBRID
+                learning_rate_list = [0.01] # => cross-validated learning-rate for SGD ZST, HYBRID
         elif imp_method == 'EWC':
             if args.cross_validate_mode:
                 synap_stgth_list = [0.1, 1, 10]
@@ -592,11 +634,11 @@ def main():
                 learning_rate_list = [0.01] # => cross-validated learning-rate for SGD
         elif imp_method == 'RWALK':
             if args.cross_validate_mode:
-                synap_stgth_list = [0.01, 0.1, 1, 10, 100]
+                synap_stgth_list = [0.01, 0.1, 1, 10]
             else:
                 #synap_stgth_list = [args.synap_stgth]
-                synap_stgth_list = [10] # => cross-validated lambda
-                learning_rate_list = [0.01] # => cross-validated learning-rate for SGD
+                synap_stgth_list = [10] # => cross-validated lambda ZST, HYBRID
+                learning_rate_list = [0.01] # => cross-validated learning-rate for SGD ZST, HYBRID
         elif imp_method == 'GEM':
             synap_stgth_list = [0]
         
@@ -617,7 +659,7 @@ def main():
                     'BATCH_SIZE': args.batch_size, 
                     'EPS_MEMORY': args.do_sampling, 
                     'MEM_SIZE': args.mem_size}
-                experiment_id = "SPLIT_AWA_ZST_%s_%r_%r_%s_%s_%s_%r_%s-"%(args.arch, args.eval_single_head, args.train_single_epoch, imp_method, 
+                experiment_id = "SPLIT_AWA_HYBRID_%s_%r_%r_%s_%s_%s_%r_%s-"%(args.arch, args.eval_single_head, args.train_single_epoch, imp_method, 
                         str(synap_stgth).replace('.', '_'), 
                         str(args.batch_size), args.do_sampling, str(args.mem_size)) + datetime.datetime.now().strftime("%y-%m-%d-%H-%M")
                 snapshot_experiment_meta_data(args.log_dir, experiment_id, exper_meta_data)
@@ -660,10 +702,10 @@ def main():
                     if args.train_single_epoch:
                         # When training using a single epoch then there is no need for data augmentation
                         model = Model(x, y_, NUM_TASKS, opt, imp_method, synap_stgth, args.fisher_update_after,
-                                args.fisher_ema_decay, network_arch=args.arch, is_ATT_DATASET=True, attr=attr)
+                                args.fisher_ema_decay, network_arch=args.arch, is_ATT_DATASET=True, attr=attr, hybrid=HYBRID)
                     else:
                         model = Model(x_aug, y_, NUM_TASKS, opt, imp_method, synap_stgth, args.fisher_update_after, 
-                                args.fisher_ema_decay, network_arch=args.arch, is_ATT_DATASET=True, x_test=x, attr=attr)
+                                args.fisher_ema_decay, network_arch=args.arch, is_ATT_DATASET=True, x_test=x, attr=attr, hybrid=HYBRID)
 
                     # Set up tf session and initialize variables.
                     config = tf.ConfigProto()
@@ -682,9 +724,9 @@ def main():
 
                 if args.cross_validate_mode:
                     # If cross-validation flag is enabled, store the stuff in a text file
-                    cross_validate_dump_file = args.log_dir + '/' + 'SPLIT_AWA_%s_%s'%(imp_method, args.optim) + '.txt'
+                    cross_validate_dump_file = args.log_dir + '/' + 'SPLIT_AWA_HYBRID_%s_%s'%(imp_method, args.optim) + '.txt'
                     with open(cross_validate_dump_file, 'a') as f:
-                            f.write('ARCH: {} \t LR:{} \t LAMBDA: {} \t ACC: {}\n'.format(args.arch, lr, synap_stgth, runs))
+                        f.write('ARCH: {} \t LR:{} \t LAMBDA: {} \t ACC: {}\n'.format(args.arch, lr, synap_stgth, runs))
                 else:
                     # Compute the mean and std
                     acc_mean = runs.mean(0)

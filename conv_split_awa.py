@@ -39,8 +39,9 @@ ARCH = 'RESNET'
 
 ## Model options
 #MODELS = ['VAN', 'PI', 'EWC', 'MAS', 'RWALK', 'GEM'] #List of valid models 
-MODELS = ['VAN', 'PI', 'EWC', 'MAS', 'RWALK'] #List of valid models 
-IMP_METHOD = 'EWC'
+#MODELS = ['VAN', 'PI', 'EWC', 'MAS', 'RWALK'] #List of valid models 
+MODELS = ['VAN', 'PI', 'RWALK'] #List of valid models 
+IMP_METHOD = 'VAN'
 SYNAP_STGTH = 75000
 FISHER_EMA_DECAY = 0.9      # Exponential moving average decay factor for Fisher computation (online Fisher)
 FISHER_UPDATE_AFTER = 50    # Number of training iterations for which the F_{\theta}^t is computed (see Eq. 10 in RWalk paper) 
@@ -59,7 +60,7 @@ RESNET18_IMAGENET_CHECKPOINT = './resnet-18-pretrained-imagenet/model.ckpt'
 ## Evaluation options
 
 ## Task split
-NUM_TASKS = 10
+NUM_TASKS = 5
 
 ## Dataset specific options
 DATA_DIR= './AWA_data/Animals_with_Attributes2/'
@@ -290,7 +291,7 @@ def train_task_sequence(model, sess, saver, datasets, task_labels, cross_validat
             for iters in range(num_iters):
                 if train_single_epoch and not cross_validate_mode:
                     #if (iters <= 50 and iters % 5 == 0) or (iters > 50 and iters % 50 == 0):
-                    if (iters < 10) or (iters % 10 == 0): # Every batch for first 10, then every 10-th batch
+                    if (iters < 20) or (iters % 50 == 0): # Every batch for first 10, then every 20-th batch
                         # Snapshot the current performance across all tasks after each mini-batch
                         fbatch = test_task_sequence(model, sess, datasets, task_labels, cross_validate_mode, eval_single_head=eval_single_head)
                         ftask[batch_dim_count] = fbatch

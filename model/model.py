@@ -14,6 +14,8 @@ from utils.gem_utils import project2cone2
 PARAM_XI_STEP = 1e-3
 NEG_INF = -1e32
 EPSILON = 1e-32
+HYBRID_ALPHA = 0.5
+TRAIN_ENTROPY_BASED_SUM = False
 
 def weight_variable(shape, name='fc', init_type='default'):
     """
@@ -55,7 +57,7 @@ class Model:
     """
 
     def __init__(self, x_train, y_, num_tasks, opt, imp_method, synap_stgth, fisher_update_after, fisher_ema_decay, network_arch='FC', 
-            is_ATT_DATASET=False, x_test=None, attr=None):
+            is_ATT_DATASET=False, x_test=None, attr=None, hybrid=False):
         """
         Instantiate the model
         """
@@ -69,6 +71,7 @@ class Model:
         self.training_iters = tf.placeholder(dtype=tf.float32, shape=())
         self.train_step = tf.placeholder(dtype=tf.float32, shape=())
         self.train_phase = tf.placeholder(tf.bool, name='train_phase')
+        self.output_mask = tf.placeholder(dtype=tf.float32, shape=[self.total_classes])
         self.is_ATT_DATASET = is_ATT_DATASET # To use a different (standard one) ResNet-18 for CUB
         if x_test is not None:
             # If CUB datatset then use augmented x (x_train) for training and non-augmented x (x_test) for testing
@@ -84,9 +87,8 @@ class Model:
         self.class_attr = attr
 
         if self.class_attr is not None:
+            self.hybrid = hybrid
             self.attr_dims = int(self.class_attr.get_shape()[1])
-        else:
-            self.output_mask = tf.placeholder(dtype=tf.float32, shape=[self.total_classes])
         
         # Save the arguments passed from the main script
         self.opt = opt
@@ -243,35 +245,49 @@ class Model:
 
         elif self.network_arch == 'VGG':
             # VGG-16
-            f_x = self.vgg_16_conv_feedforward(x)
-            attr_embed = self.get_attribute_embedding(self.class_attr)
+            phi_x = self.vgg_16_conv_feedforward(x)
             
         elif self.network_arch == 'RESNET':
-            if self.is_ATT_DATASET:
-                # Standard ResNet-18
-                kernels = [7, 3, 3, 3, 3]
-                filters = [64, 64, 128, 256, 512]
-                strides = [2, 0, 2, 2, 2]
-            else:
-                # Same resnet-18 as used in GEM paper
-                kernels = [3, 3, 3, 3, 3]
-                filters = [20, 20, 40, 80, 160]
-                strides = [1, 0, 2, 2, 2]
-            f_x = self.resnet18_conv_feedforward(x, kernels, filters, strides)
-            attr_embed = self.get_attribute_embedding(self.class_attr)
+            # Standard ResNet-18
+            kernels = [7, 3, 3, 3, 3]
+            filters = [64, 64, 128, 256, 512]
+            strides = [2, 0, 2, 2, 2]
+            # Get the image features
+            phi_x = self.resnet18_conv_feedforward(x, kernels, filters, strides)
 
-        # Create list of variables for storing different measures
+        # Get the attributes embedding
+        attr_embed = self.get_attribute_embedding(self.class_attr, phi_x) # Does not contain biases yet, Dimension: TOTAL_CLASSES x image_feature_dim
+        # Add the biases now
+        last_layer_biases = bias_variable([self.total_classes], name='attr_embed_b')
+        self.trainable_vars.append(last_layer_biases)
+
+        # if self.hybrid then store the weights for the ONE-HOT head as well!
+        if self.hybrid:
+            ohot_logits = _fc(phi_x, self.total_classes, self.trainable_vars, name='fc_1')
+
+        # Now that we have all the trainable variables, initialize the different book keeping variables
         # Note: This method has to be called before calculating fisher 
         # or any other importance measure
         self.init_vars()
 
-        # Define triplet loss
-        f_x_normalized = tf.nn.l2_normalize(f_x, axis=1)
-        attr_embed_normalized = tf.nn.l2_normalize(attr_embed, axis=1)
+        # Compute the logits for the ZST case
+        zst_logits = tf.matmul(phi_x, tf.transpose(attr_embed)) + last_layer_biases
+        # Prune the predictions to only include the classes for which
+        # the training data is present
+        pruned_zst_logits = tf.where(tf.tile(tf.equal(self.output_mask[None,:], 1.0), 
+            [tf.shape(zst_logits)[0], 1]), zst_logits, NEG_INF*tf.ones_like(zst_logits))
+        # Prune logits for ONE-HOT head
+        if self.hybrid:
+            pruned_ohot_logits = tf.where(tf.tile(tf.equal(self.output_mask[None,:], 1.0), 
+                [tf.shape(ohot_logits)[0], 1]), ohot_logits, NEG_INF*tf.ones_like(ohot_logits))
 
-        self.similarity_kernel = self.triplet_loss_scale * tf.matmul(f_x_normalized, tf.transpose(attr_embed_normalized)) # B x C
-        self.mse = 2.0*tf.nn.l2_loss(self.similarity_kernel) # tf.nn.l2_loss computes sum(T**2)/ 2
-        self.triplet_softmax_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=y_, logits=self.similarity_kernel))
+        # Compute the losses
+        if self.hybrid:
+            zst_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=y_, logits=pruned_zst_logits))
+            ohot_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=y_, logits=pruned_ohot_logits))
+            self.unweighted_entropy = (HYBRID_ALPHA * zst_loss) + (1 - HYBRID_ALPHA) * ohot_loss
+        else:
+            self.unweighted_entropy = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=y_, logits=pruned_zst_logits))
 
         # Create operations for loss and gradient calculation
         self.loss_and_gradients(self.imp_method)
@@ -299,13 +315,20 @@ class Model:
         self.weights_store_ops()
 
         # Summary operations for visualization
-        tf.summary.scalar("triplet_loss", self.triplet_softmax_loss)
+        tf.summary.scalar("triplet_loss", self.unweighted_entropy)
         for v in self.trainable_vars:
             tf.summary.histogram(v.name.replace(":", "_"), v)
         self.merged_summary = tf.summary.merge_all()
 
         # Accuracy measure
-        self.correct_predictions = tf.equal(tf.argmax(self.similarity_kernel, 1), tf.argmax(y_, 1))
+        if self.hybrid:
+            zst_prob = tf.nn.softmax(pruned_zst_logits)
+            ohot_prob = tf.nn.softmax(pruned_ohot_logits)
+            model_prob = (HYBRID_ALPHA * zst_prob) + (1 - HYBRID_ALPHA) * ohot_prob
+            self.correct_predictions = tf.equal(tf.argmax(model_prob, 1), tf.argmax(y_, 1))
+        else:
+            self.correct_predictions = tf.equal(tf.argmax(pruned_zst_logits, 1), tf.argmax(y_, 1))
+
         self.accuracy = tf.reduce_mean(tf.cast(self.correct_predictions, tf.float32))
    
     def fc_variables(self, layer_dims):
@@ -454,11 +477,11 @@ class Model:
         h = vgg_fc_layer(h, 4096, self.trainable_vars, apply_relu=True, name='fc7')
         # fc8
         if self.class_attr is not None:
-            logits = vgg_fc_layer(h, self.attr_dims, self.trainable_vars, apply_relu=False, name='fc8')
+            # Return the image features
+            return h
         else:
             logits = vgg_fc_layer(h, self.total_classes, self.trainable_vars, apply_relu=False, name='fc8')
-
-        return logits
+            return logits
 
 
     def resnet18_conv_feedforward(self, h, kernels, filters, strides):
@@ -495,24 +518,25 @@ class Model:
         h = tf.reduce_mean(h, [1, 2])
 
         if self.class_attr is not None:
-            logits = _fc(h, self.attr_dims, self.trainable_vars, name='fc_1')
+            # Return the image features
+            return h
         else:
             logits = _fc(h, self.total_classes, self.trainable_vars, name='fc_1')
+            return logits
 
-        return logits
 
-    def get_attribute_embedding(self, attr):
+    def get_attribute_embedding(self, attr, image_feature):
         """
         Get attribute embedding using a simple FC network
 
         Returns:
             Embedding vector of k x ATTR_DIMS 
         """
-        w = weight_variable([self.attr_dims, self.attr_dims], name='attr_embed_w')
-        b = bias_variable([self.attr_dims], name='attr_embed_b')
+        image_feature_dim = image_feature.get_shape().as_list()[1]
+        w = weight_variable([self.attr_dims, image_feature_dim], name='attr_embed_w')
         self.trainable_vars.append(w)
-        self.trainable_vars.append(b)
-        return create_fc_layer(attr, w, b, apply_relu=False)
+        # Return the inner product of attribute matrix and weight vector. 
+        return tf.matmul(attr, w) # Dimension should be TOTAL_CLASSES x image_feature_dim
 
     def loss_and_gradients(self, imp_method):
         """
@@ -546,24 +570,14 @@ class Model:
             self.unweighted_entropy += tf.add_n([0.0005 * tf.nn.l2_loss(v) for v in self.trainable_vars if 'weights' in v.name or 'kernel' in v.name])
         """
 
-        if self.class_attr is not None:
-            # Regularized training loss
-            self.reg_loss = tf.squeeze(self.triplet_softmax_loss + self.synap_stgth * reg)
-            # Compute the gradients of the vanilla loss
-            self.vanilla_gradients_vars = self.opt.compute_gradients(self.triplet_softmax_loss, 
-                    var_list=self.trainable_vars)
-            # Compute the gradients of regularized loss
-            self.reg_gradients_vars = self.opt.compute_gradients(self.reg_loss, 
-                    var_list=self.trainable_vars) 
-        else:
-            # Regularized training loss
-            self.reg_loss = tf.squeeze(self.unweighted_entropy + self.synap_stgth * reg)
-            # Compute the gradients of the vanilla loss
-            self.vanilla_gradients_vars = self.opt.compute_gradients(self.unweighted_entropy, 
-                    var_list=self.trainable_vars)
-            # Compute the gradients of regularized loss
-            self.reg_gradients_vars = self.opt.compute_gradients(self.reg_loss, 
-                    var_list=self.trainable_vars)
+        # Regularized training loss
+        self.reg_loss = tf.squeeze(self.unweighted_entropy + self.synap_stgth * reg)
+        # Compute the gradients of the vanilla loss
+        self.vanilla_gradients_vars = self.opt.compute_gradients(self.unweighted_entropy, 
+                var_list=self.trainable_vars)
+        # Compute the gradients of regularized loss
+        self.reg_gradients_vars = self.opt.compute_gradients(self.reg_loss, 
+                var_list=self.trainable_vars)
 
     def train_op(self):
         """
@@ -756,10 +770,7 @@ class Model:
 
         Returns:
         """
-        if self.class_attr is not None:
-            ders = tf.gradients(self.triplet_softmax_loss, self.trainable_vars)
-        else:
-            ders = tf.gradients(self.unweighted_entropy, self.trainable_vars)
+        ders = tf.gradients(self.unweighted_entropy, self.trainable_vars)
         fisher_ema_at_step_ops = []
         fisher_accumulate_at_step_ops = []
 
@@ -878,15 +889,6 @@ class Model:
         """
         sess.run(self.output_mask.assign(new_mask))
 
-    def set_logits_weights(self, sess, labels, logits_weighting):
-        """
-        """
-        weighting_mask = np.zeros(self.total_classes, dtype=np.float32)
-        for l in labels:
-            weighting_mask[l] = logits_weighting[l] 
-
-        sess.run(self.logit_weights.assign(weighting_mask))
-
     def init_updates(self, sess):
         """
         Initialization updates
@@ -966,10 +968,9 @@ class Model:
                 masked_class_attrs = np.zeros_like(class_attr)
                 attr_offset = task * num_classes_per_task
                 masked_class_attrs[attr_offset:attr_offset+num_classes_per_task] = class_attr[attr_offset:attr_offset+num_classes_per_task]
-            else:
-                # Logits mask
-                logit_mask = np.zeros(self.total_classes)
-                logit_mask[train_labels] = 1.0
+            # Logits mask
+            logit_mask = np.zeros(self.total_classes)
+            logit_mask[train_labels] = 1.0
 
             # Loop over the entire training dataset to compute the parameter importance
             batch_size = 10
@@ -978,7 +979,7 @@ class Model:
                 offset = iters * batch_size
                 if self.class_attr is not None:
                     sess.run(self.accumulate_hebbian_scores, feed_dict={self.x: train_x[offset:offset+batch_size], self.keep_prob: 1.0, 
-                        self.class_attr: masked_class_attrs, self.train_phase: False})
+                            self.class_attr: masked_class_attrs, self.output_mask: logit_mask, self.train_phase: False})
                 else:
                     sess.run(self.accumulate_hebbian_scores, feed_dict={self.x: train_x[offset:offset+batch_size], self.keep_prob: 1.0, 
                         self.output_mask: logit_mask, self.train_phase: False})
