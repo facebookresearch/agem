@@ -504,8 +504,9 @@ def test_task_sequence(model, sess, test_data, test_tasks, cross_validate_mode, 
     if eval_single_head:
         # Single-head evaluation setting
         logit_mask = np.ones(TOTAL_CLASSES)
+    else:
+        logit_mask = np.zeros(TOTAL_CLASSES)
 
-    logit_mask = np.zeros(TOTAL_CLASSES)
     for task, labels in enumerate(test_tasks):
         if not eval_single_head:
             # Multi-head evaluation setting

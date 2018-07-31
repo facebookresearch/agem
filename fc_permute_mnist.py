@@ -365,9 +365,6 @@ def main():
     # Load the permute mnist dataset
     datasets = construct_permute_mnist(NUM_TASKS)
 
-    #for i in range(len(datasets)):
-    #    print(np.unique(np.column_stack(np.nonzero(datasets[i]['train']['labels']))[:,1])
-
     # Variables to store the accuracies and standard deviations of the experiment
     acc_mean = dict()
     acc_std = dict()
