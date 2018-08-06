@@ -6,6 +6,7 @@ from __future__ import print_function
 import argparse
 import os
 import sys
+import math
 
 import datetime
 import numpy as np
@@ -33,6 +34,8 @@ VALID_OPTIMS = ['SGD', 'MOMENTUM', 'ADAM']
 OPTIM = 'ADAM'
 OPT_POWER = 0.9
 OPT_MOMENTUM = 0.9
+VALID_ARCHS = ['FC', 'CNN', 'RESNET']
+ARCH = 'FC'
 
 ## Model options
 MODELS = ['VAN', 'PI', 'EWC', 'MAS', 'GEM', 'RWALK'] #List of valid models 
@@ -42,6 +45,9 @@ FISHER_EMA_DECAY = 0.9      # Exponential moving average decay factor for Fisher
 FISHER_UPDATE_AFTER = 10    # Number of training iterations for which the F_{\theta}^t is computed (see Eq. 10 in RWalk paper) 
 MEMORY_SIZE_PER_TASK = 25   # Number of samples per task
 INPUT_FEATURE_SIZE = 784
+IMG_HEIGHT = 28
+IMG_WIDTH = 28
+IMG_CHANNELS = 1
 TOTAL_CLASSES = 10          # Total number of classes in the dataset 
 
 ## Logging, saving and testing options
@@ -65,6 +71,8 @@ def get_arguments():
                        help="If option is chosen then train for single epoch")
     parser.add_argument("--eval-single-head", action="store_true",
                        help="If option is chosen then evaluate on a single head setting.")
+    parser.add_argument("--arch", type=str, default=ARCH, help="Network Architecture for the experiment.\
+                        \n \nSupported values: %s"%(VALID_ARCHS))
     parser.add_argument("--num-runs", type=int, default=NUM_RUNS,
                        help="Total runs/ experiments over which accuracy is averaged.")
     parser.add_argument("--train-iters", type=int, default=TRAIN_ITERS,
@@ -163,8 +171,7 @@ def train_task_sequence(model, sess, datasets, cross_validate_mode, train_single
 
             # Train a task observing sequence of data
             if train_single_epoch:
-                num_iters = 20
-                #num_iters = num_train_examples // batch_size
+                num_iters = num_train_examples // batch_size
             else:
                 num_iters = train_iters
 
@@ -189,7 +196,8 @@ def train_task_sequence(model, sess, datasets, cross_validate_mode, train_single
 
                 offset = (iters * batch_size) % (num_train_examples - batch_size)
 
-                feed_dict = {model.x: train_x[offset:offset+batch_size], model.y_: train_y[offset:offset+batch_size], 
+                #feed_dict = {model.x: train_x[offset:offset+batch_size], model.y_: train_y[offset:offset+batch_size], 
+                feed_dict = {model.x: np.reshape(train_x[offset:offset+batch_size], (-1, IMG_HEIGHT, IMG_WIDTH, IMG_CHANNELS)), model.y_: train_y[offset:offset+batch_size], 
                         model.sample_weights: task_sample_weights[offset:offset+batch_size],
                         model.training_iters: num_iters, model.train_step: iters, model.keep_prob: 1.0, 
                         model.output_mask: logit_mask, model.train_phase: True}
@@ -260,6 +268,10 @@ def train_task_sequence(model, sess, datasets, cross_validate_mode, train_single
                 if (iters % 500 == 0):
                     print('Step {:d} {:.3f}'.format(iters, loss))
 
+                if (math.isnan(loss)):
+                    print('ERROR: NaNs NaNs Nans!!!')
+                    sys.exit(0)
+
             print('\t\t\t\tTraining for Task%d done!'%(task))
 
             # Compute the inter-task updates, Fisher/ importance scores etc
@@ -315,7 +327,8 @@ def test_task_sequence(model, sess, test_data, cross_validate_mode, eval_single_
     else:
         test_set = 'test'
     for task, _ in enumerate(test_data):
-        feed_dict = {model.x: test_data[task][test_set]['images'], 
+        #feed_dict = {model.x: test_data[task][test_set]['images'], 
+        feed_dict = {model.x: np.reshape(test_data[task][test_set]['images'], (-1, IMG_HEIGHT, IMG_WIDTH, IMG_CHANNELS)), 
                 model.y_: test_data[task][test_set]['labels'], model.keep_prob: 1.0, 
                 model.output_mask: logit_mask, model.train_phase: False}
         acc = model.accuracy.eval(feed_dict = feed_dict)
@@ -330,6 +343,10 @@ def main():
 
     # Get the CL arguments
     args = get_arguments()
+
+    # Check if the network architecture is valid
+    if args.arch not in VALID_ARCHS:
+        raise ValueError("Network architecture %s is not supported!"%(args.arch))
 
     # Check if the method to compute importance is valid
     if args.imp_method not in MODELS:
@@ -378,7 +395,8 @@ def main():
         tf.set_random_seed(RANDOM_SEED)
 
         # Define Input and Output of the model
-        x = tf.placeholder(tf.float32, shape=[None, INPUT_FEATURE_SIZE])
+        #x = tf.placeholder(tf.float32, shape=[None, INPUT_FEATURE_SIZE])
+        x = tf.placeholder(tf.float32, shape=[None, IMG_HEIGHT, IMG_WIDTH, IMG_CHANNELS])
         y_ = tf.placeholder(tf.float32, shape=[None, TOTAL_CLASSES])
 
         # Define the optimizer
@@ -395,7 +413,7 @@ def main():
 
         # Create the Model/ contruct the graph
         model = Model(x, y_, NUM_TASKS, opt, args.imp_method, args.synap_stgth, args.fisher_update_after, 
-                args.fisher_ema_decay, network_arch='FC')
+                args.fisher_ema_decay, network_arch=args.arch)
 
         # Set up tf session and initialize variables.
         config = tf.ConfigProto()
@@ -418,10 +436,10 @@ def main():
     if args.cross_validate_mode:
         cross_validate_dump_file = args.log_dir + '/' + 'PERMUTE_MNIST_%s_%s'%(args.imp_method, args.optim) + '.txt'
         with open(cross_validate_dump_file, 'a') as f:
-            f.write('LR:{} \t LAMBDA: {} \t ACC: {}\n'.format(args.learning_rate, args.synap_stgth, acc_mean[-1,:].mean()))
-
-    # Store the experiment output to a file
-    snapshot_experiment_eval(args.log_dir, experiment_id, exper_acc)
+            f.write('ARCH: {} \t LR:{} \t LAMBDA: {} \t ACC: {}\n'.format(args.arch, args.learning_rate, args.synap_stgth, acc_mean[-1,:].mean()))
+    else:
+        # Store the experiment output to a file
+        snapshot_experiment_eval(args.log_dir, experiment_id, exper_acc)
 
 if __name__ == '__main__':
     main()

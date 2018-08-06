@@ -40,8 +40,8 @@ ARCH = 'RESNET'
 ## Model options
 #MODELS = ['VAN', 'PI', 'EWC', 'MAS', 'GEM', 'RWALK'] # List of valid models 
 #MODELS = ['VAN', 'PI', 'EWC', 'MAS', 'RWALK'] # List of valid models 
-MODELS = ['VAN', 'PI', 'RWALK'] # List of valid models 
-IMP_METHOD = 'VAN'
+MODELS = ['PI', 'EWC', 'MAS', 'RWALK'] # List of valid models 
+IMP_METHOD = 'EWC'
 SYNAP_STGTH = 75000
 FISHER_EMA_DECAY = 0.9      # Exponential moving average decay factor for Fisher computation (online Fisher)
 FISHER_UPDATE_AFTER = 50    # Number of training iterations for which the F_{\theta}^t is computed (see Eq. 10 in RWalk paper) 
@@ -50,7 +50,6 @@ IMG_HEIGHT = 224
 IMG_WIDTH = 224
 IMG_CHANNELS = 3
 TOTAL_CLASSES = 50          # Total number of classes in the dataset 
-HYBRID=True
 
 ## Logging, saving and testing options
 LOG_DIR = './split_awa_results'
@@ -114,6 +113,8 @@ def get_arguments():
             help="If option is chosen then enable the cross validation of the learning rate")
     parser.add_argument("--train-single-epoch", action="store_true", 
             help="If option is chosen then train for single epoch")
+    parser.add_argument("--set-hybrid", action="store_true", 
+            help="If option is chosen then train using hybrid model")
     parser.add_argument("--eval-single-head", action="store_true",
             help="If option is chosen then evaluate on a single head setting.")
     parser.add_argument("--arch", type=str, default=ARCH,
@@ -302,7 +303,7 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, num_classes_pe
                     if (iters < 20) or (iters % 50 == 0): # Every batch for first 10, then every 10-th batch
                         # Snapshot the current performance across all tasks after each mini-batch
                         fbatch = test_task_sequence(model, sess, datasets, class_attr, num_classes_per_task, task_labels, 
-                                cross_validate_mode, eval_single_head=eval_single_head)
+                                cross_validate_mode, eval_single_head=eval_single_head, test_labels=test_labels)
                         ftask[batch_dim_count] = fbatch
                         # Increment the batch_dim_count
                         batch_dim_count += 1
@@ -471,13 +472,13 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, num_classes_pe
             if cross_validate_mode:
                 if task == NUM_TASKS - 1:
                     # List to store accuracy for all the tasks for the current trained model
-                    ftask = test_task_sequence(model, sess, datasets, class_attr, num_classes_per_task, task_labels, cross_validate_mode, eval_single_head=eval_single_head)
+                    ftask = test_task_sequence(model, sess, datasets, class_attr, num_classes_per_task, task_labels, cross_validate_mode, eval_single_head=eval_single_head, test_labels=test_labels)
             elif train_single_epoch:
-                fbatch = test_task_sequence(model, sess, datasets, class_attr, num_classes_per_task, task_labels, cross_validate_mode, eval_single_head=eval_single_head)
+                fbatch = test_task_sequence(model, sess, datasets, class_attr, num_classes_per_task, task_labels, cross_validate_mode, eval_single_head=eval_single_head, test_labels=test_labels)
                 ftask[batch_dim_count] = fbatch
             else:
                 # Multi-epoch training, so compute accuracy at the end
-                ftask = test_task_sequence(model, sess, datasets, class_attr, num_classes_per_task, task_labels, cross_validate_mode, eval_single_head=eval_single_head)
+                ftask = test_task_sequence(model, sess, datasets, class_attr, num_classes_per_task, task_labels, cross_validate_mode, eval_single_head=eval_single_head, test_labels=test_labels)
 
             if SAVE_MODEL_PARAMS:
                 save(saver, sess, SNAPSHOT_DIR, iters)
@@ -503,7 +504,7 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, num_classes_pe
         runs = np.array(runs)
         return runs
 
-def test_task_sequence(model, sess, test_data, class_attr, num_classes_per_task, test_tasks, cross_validate_mode, eval_single_head=True):
+def test_task_sequence(model, sess, test_data, class_attr, num_classes_per_task, test_tasks, cross_validate_mode, eval_single_head=True, test_labels=None):
     """
     Snapshot the current performance
     """
@@ -514,11 +515,12 @@ def test_task_sequence(model, sess, test_data, class_attr, num_classes_per_task,
     else:
         test_set = 'test'
 
+    logit_mask = np.zeros(TOTAL_CLASSES)
     if eval_single_head:
         # Single-head evaluation setting
-        logit_mask = np.ones(TOTAL_CLASSES)
-    else:
-        logit_mask = np.zeros(TOTAL_CLASSES)
+        logit_mask[:len(test_labels)] = 1.0
+        masked_class_attrs = np.zeros_like(class_attr)
+        masked_class_attrs[:len(test_labels)] = class_attr[:len(test_labels)]
 
     for task, labels in enumerate(test_tasks):
         if not eval_single_head:
@@ -599,46 +601,56 @@ def main():
     if args.cross_validate_mode:
         models_list = MODELS
         #learning_rate_list = [1, 0.3, 0.1, 0.03, 0.01, 0.003, 0.001, 0.0003, 0.0001] # => initial less refined list
-        learning_rate_list = [0.03, 0.01, 0.003] # => Sanity test
+        learning_rate_list = [0.1, 0.03, 0.01, 0.003, 0.001, 0.0003] # => Sanity test
     else:
         #models_list = [args.imp_method]
         #learning_rate_list = [args.learning_rate]
         models_list = MODELS
+
     for imp_method in models_list:
         if imp_method == 'VAN':
             synap_stgth_list = [0]
             if args.cross_validate_mode:
                 pass
             else:
-                learning_rate_list = [0.01] # => cross-validated learning-rate for SGD ZST, HYBRID
+                #learning_rate_list = [0.01] # => cross-validated learning-rate for SGD ZST, HYBRID, Resnet
+                learning_rate_list = [0.0003] # => cross-validated learning-rate for SGD ZST, HYBRID, VGG
         elif imp_method == 'PI':
-            if args.cross_validate_mode:
-                synap_stgth_list = [0.1, 1]
-            else:
-                #synap_stgth_list = [args.synap_stgth]
-                synap_stgth_list = [0.1] # => cross-validated lambda ZST, HYBRID
-                learning_rate_list = [0.01] # => cross-validated learning-rate for SGD ZST, HYBRID
-        elif imp_method == 'EWC':
             if args.cross_validate_mode:
                 synap_stgth_list = [0.1, 1, 10]
             else:
                 #synap_stgth_list = [args.synap_stgth]
-                synap_stgth_list = [10] # => cross-validated lambda
-                learning_rate_list = [0.01] # => cross-validated learning-rate for SGD
+                #synap_stgth_list = [0.1] # => cross-validated lambda ZST, HYBRID, Resnet
+                #learning_rate_list = [0.01] # => cross-validated learning-rate for SGD ZST, HYBRID, Resnet
+                synap_stgth_list = [1] # => cross-validated lambda ZST, HYBRID, VGG
+                learning_rate_list = [0.001] # => cross-validated learning-rate for SGD ZST, HYBRID, VGG
+        elif imp_method == 'EWC':
+            if args.cross_validate_mode:
+                synap_stgth_list = [0.1, 1, 10, 100]
+            else:
+                #synap_stgth_list = [args.synap_stgth]
+                #synap_stgth_list = [1] # => cross-validated lambda, Resnet
+                #learning_rate_list = [0.01] # => cross-validated learning-rate for SGD, Resnet
+                synap_stgth_list = [10] # => cross-validated lambda, VGG
+                learning_rate_list = [0.0003] # => cross-validated learning-rate for SGD, VGG
         elif imp_method == 'MAS':
             if args.cross_validate_mode:
-                synap_stgth_list = [0.1, 1]
+                synap_stgth_list = [0.1, 1, 10]
             else:
                 #synap_stgth_list = [args.synap_stgth]
-                synap_stgth_list = [0.1] # => cross-validated lambda
-                learning_rate_list = [0.01] # => cross-validated learning-rate for SGD
+                #synap_stgth_list = [0.1] # => cross-validated lambda, Resnet
+                #learning_rate_list = [0.01] # => cross-validated learning-rate for SGD, Resnet
+                synap_stgth_list = [1] # => cross-validated lambda, VGG
+                learning_rate_list = [0.001] # => cross-validated learning-rate for SGD, VGG
         elif imp_method == 'RWALK':
             if args.cross_validate_mode:
-                synap_stgth_list = [0.01, 0.1, 1, 10]
+                synap_stgth_list = [0.1, 1, 10, 100]
             else:
                 #synap_stgth_list = [args.synap_stgth]
-                synap_stgth_list = [10] # => cross-validated lambda ZST, HYBRID
-                learning_rate_list = [0.01] # => cross-validated learning-rate for SGD ZST, HYBRID
+                #synap_stgth_list = [10] # => cross-validated lambda ZST, HYBRID, Resnet
+                #learning_rate_list = [0.01] # => cross-validated learning-rate for SGD ZST, HYBRID, Resnet
+                synap_stgth_list = [10] # => cross-validated lambda ZST, HYBRID, VGG
+                learning_rate_list = [0.001] # => cross-validated learning-rate for SGD ZST, HYBRID, VGG
         elif imp_method == 'GEM':
             synap_stgth_list = [0]
         
@@ -647,6 +659,7 @@ def main():
                 # Generate the experiment key and store the meta data in a file
                 exper_meta_data = {'ARCH': args.arch,
                     'DATASET': 'SPLIT_AWA',
+                    'HYBRID': args.set_hybrid,
                     'NUM_RUNS': args.num_runs,
                     'EVAL_SINGLE_HEAD': args.eval_single_head, 
                     'TRAIN_SINGLE_EPOCH': args.train_single_epoch, 
@@ -659,7 +672,7 @@ def main():
                     'BATCH_SIZE': args.batch_size, 
                     'EPS_MEMORY': args.do_sampling, 
                     'MEM_SIZE': args.mem_size}
-                experiment_id = "SPLIT_AWA_HYBRID_%s_%r_%r_%s_%s_%s_%r_%s-"%(args.arch, args.eval_single_head, args.train_single_epoch, imp_method, 
+                experiment_id = "SPLIT_AWA_HYB_%r_%s_%r_%r_%s_%s_%s_%r_%s-"%(args.set_hybrid, args.arch, args.eval_single_head, args.train_single_epoch, imp_method, 
                         str(synap_stgth).replace('.', '_'), 
                         str(args.batch_size), args.do_sampling, str(args.mem_size)) + datetime.datetime.now().strftime("%y-%m-%d-%H-%M")
                 snapshot_experiment_meta_data(args.log_dir, experiment_id, exper_meta_data)
@@ -702,10 +715,10 @@ def main():
                     if args.train_single_epoch:
                         # When training using a single epoch then there is no need for data augmentation
                         model = Model(x, y_, NUM_TASKS, opt, imp_method, synap_stgth, args.fisher_update_after,
-                                args.fisher_ema_decay, network_arch=args.arch, is_ATT_DATASET=True, attr=attr, hybrid=HYBRID)
+                                args.fisher_ema_decay, network_arch=args.arch, is_ATT_DATASET=True, attr=attr, hybrid=args.set_hybrid)
                     else:
                         model = Model(x_aug, y_, NUM_TASKS, opt, imp_method, synap_stgth, args.fisher_update_after, 
-                                args.fisher_ema_decay, network_arch=args.arch, is_ATT_DATASET=True, x_test=x, attr=attr, hybrid=HYBRID)
+                                args.fisher_ema_decay, network_arch=args.arch, is_ATT_DATASET=True, x_test=x, attr=attr, hybrid=args.set_hybrid)
 
                     # Set up tf session and initialize variables.
                     config = tf.ConfigProto()

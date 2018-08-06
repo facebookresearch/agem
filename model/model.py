@@ -286,8 +286,10 @@ class Model:
             zst_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=y_, logits=pruned_zst_logits))
             ohot_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=y_, logits=pruned_ohot_logits))
             self.unweighted_entropy = (HYBRID_ALPHA * zst_loss) + (1 - HYBRID_ALPHA) * ohot_loss
+            self.mse = 2.0*tf.nn.l2_loss((HYBRID_ALPHA * pruned_zst_logits) + (1 - HYBRID_ALPHA) * pruned_ohot_logits) # tf.nn.l2_loss computes sum(T**2)/ 2
         else:
             self.unweighted_entropy = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=y_, logits=pruned_zst_logits))
+            self.mse = 2.0*tf.nn.l2_loss(pruned_zst_logits) # tf.nn.l2_loss computes sum(T**2)/ 2
 
         # Create operations for loss and gradient calculation
         self.loss_and_gradients(self.imp_method)
@@ -554,7 +556,6 @@ class Model:
         elif imp_method == 'PI':
             reg = tf.add_n([tf.reduce_sum(tf.square(w - w_star) * f) for w, w_star, 
                 f in zip(self.trainable_vars, self.star_vars, self.big_omega_vars)])
-        # TODO: Do we need relu at the last resnet block. iCaRL code does not seem to have the relu here
         elif imp_method == 'MAS':
             reg = tf.add_n([tf.reduce_sum(tf.square(w - w_star) * f) for w, w_star, 
                 f in zip(self.trainable_vars, self.star_vars, self.hebbian_score_vars)])

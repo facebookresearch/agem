@@ -365,7 +365,7 @@ CIFAR_100_URL = "http://www.cs.toronto.edu/~kriz/cifar-100-python.tar.gz"
 CIFAR_10_DIR = "/cifar_10"
 CIFAR_100_DIR = "/cifar_100"
 
-def construct_split_cifar(task_labels):
+def construct_split_cifar(task_labels, is_cifar_100=True):
     """
     Construct Split CIFAR-10 and CIFAR-100 datasets
 
@@ -375,8 +375,9 @@ def construct_split_cifar(task_labels):
     """
 
     data_dir = 'CIFAR_data'
+
     # Get the cifar dataset
-    cifar_data = _get_cifar(data_dir)
+    cifar_data = _get_cifar(data_dir, is_cifar_100)
 
     # Define a list for storing the data for different tasks
     datasets = []
@@ -431,7 +432,7 @@ def construct_split_cifar(task_labels):
     return datasets
 
 
-def _get_cifar(data_dir):
+def _get_cifar(data_dir, is_cifar_100):
     """
     Get the CIFAR-10 and CIFAR-100 datasets
 
@@ -463,27 +464,54 @@ def _get_cifar(data_dir):
 
         return labels_one_hot
 
-    # Load the training batch of CIFAR-100
-    f = open(data_dir + CIFAR_100_DIR + '/train', 'rb')
-    datadict = pickle.load(f)
-    f.close()
+    if is_cifar_100:
+        # Load the training data of CIFAR-100
+        f = open(data_dir + CIFAR_100_DIR + '/train', 'rb')
+        datadict = pickle.load(f)
+        f.close()
+    
+        _X = datadict['data']
+        _Y = np.array(datadict['fine_labels'])
+        _Y = dense_to_one_hot(_Y, num_classes=100)
 
-    _X = datadict['data']
-    _Y = np.array(datadict['fine_labels'])
-    _Y = dense_to_one_hot(_Y, num_classes=100)
+        _X = np.array(_X, dtype=float) / 255.0
+        _X = _X.reshape([-1, 3, 32, 32])
+        _X = _X.transpose([0, 2, 3, 1])
+    
+        # Compute the data mean for normalization
+        x_train_mean = np.mean(_X, axis=0)
 
-    _X = np.array(_X, dtype=float) / 255.0
-    _X = _X.reshape([-1, 3, 32, 32])
-    _X = _X.transpose([0, 2, 3, 1])
+        x_train = _X[:40000]
+        y_train = _Y[:40000]
 
-    # Compute the data mean for normalization
-    x_train_mean = np.mean(_X, axis=0)
-
-    x_train = _X[:40000]
-    y_train = _Y[:40000]
-
-    x_validation = _X[40000:]
-    y_validation = _Y[40000:]
+        x_validation = _X[40000:]
+        y_validation = _Y[40000:]
+    else:
+    	# Load all the training batches of the CIFAR-10
+    	for i in range(5):
+            f = open(data_dir + CIFAR_10_DIR + '/data_batch_' + str(i + 1), 'rb')
+            datadict = pickle.load(f)
+            f.close()
+            
+            _X = datadict['data']
+            _Y = np.array(datadict['labels'])
+            _Y = dense_to_one_hot(_Y, num_classes=10)
+            
+            _X = np.array(_X, dtype=float) / 255.0
+            _X = _X.reshape([-1, 3, 32, 32])
+            _X = _X.transpose([0, 2, 3, 1])
+            
+            if x_train is None:
+                x_train = _X
+                y_train = _Y
+            else:
+            	x_train = np.concatenate((x_train, _X), axis=0)
+            	y_train = np.concatenate((y_train, _Y), axis=0)
+    
+        # Compute the data mean for normalization
+        x_train_mean = np.mean(x_train, axis=0)
+        x_validation = x_train[:40000] # We don't use validation set with CIFAR-10
+        y_validation = y_train[40000:]
 
     # Normalize the train and validation sets
     x_train -= x_train_mean
@@ -497,14 +525,24 @@ def _get_cifar(data_dir):
     dataset['validation'].append(y_validation)
     dataset['validation'].append(l)
 
-    # Load the test batch of CIFAR-100
-    f = open(data_dir + CIFAR_100_DIR + '/test', 'rb')
-    datadict = pickle.load(f)
-    f.close()
+    if is_cifar_100:
+        # Load the test batch of CIFAR-100
+        f = open(data_dir + CIFAR_100_DIR + '/test', 'rb')
+        datadict = pickle.load(f)
+        f.close()
     
-    _X = datadict['data']
-    _Y = np.array(datadict['fine_labels'])
-    _Y = dense_to_one_hot(_Y, num_classes=100)
+        _X = datadict['data']
+        _Y = np.array(datadict['fine_labels'])
+        _Y = dense_to_one_hot(_Y, num_classes=100)
+    else:
+        # Load the test batch of CIFAR-10
+        f = open(data_dir + CIFAR_10_DIR + '/test_batch', 'rb')
+        datadict = pickle.load(f)
+        f.close()
+
+        _X = datadict["data"]
+        _Y = np.array(datadict['labels'])
+        _Y = dense_to_one_hot(_Y, num_classes=10)
 
     _X = np.array(_X, dtype=float) / 255.0
     _X = _X.reshape([-1, 3, 32, 32])

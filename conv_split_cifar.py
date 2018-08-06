@@ -51,11 +51,41 @@ TOTAL_CLASSES = 100          # Total number of classes in the dataset
 
 ## Logging, saving and testing options
 LOG_DIR = './split_cifar_results'
-
+RESNET18_CIFAR10_CHECKPOINT = './resnet-18-pretrained-cifar10/model.ckpt-19999'
 ## Evaluation options
 
 ## Task split
 NUM_TASKS = 20
+
+# Define function to load/ store training weights. We will use ImageNet initialization later on
+def save(saver, sess, logdir, step):
+   '''Save weights.
+
+   Args:
+     saver: TensorFlow Saver object.
+     sess: TensorFlow session.
+     logdir: path to the snapshots directory.
+     step: current training step.
+   '''
+   model_name = 'model.ckpt'
+   checkpoint_path = os.path.join(logdir, model_name)
+
+   if not os.path.exists(logdir):
+      os.makedirs(logdir)
+   saver.save(sess, checkpoint_path, global_step=step)
+   print('The checkpoint has been created.')
+
+def load(saver, sess, ckpt_path):
+    '''Load trained weights.
+
+    Args:
+        saver: TensorFlow Saver object.
+        sess: TensorFlow session.
+        ckpt_path: path to checkpoint file with parameters.
+    '''
+    saver.restore(sess, ckpt_path)
+    print("Restored model parameters from {}".format(ckpt_path))
+
 
 def get_arguments():
     """Parse all the arguments provided from the CLI.
@@ -119,6 +149,13 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
         # Initialize all the variables in the model
         sess.run(tf.global_variables_initializer())
 
+        # Load the variables from a checkpoint
+        if model.network_arch == 'RESNET':
+            # Define loader (weights which will be loaded from a checkpoint)
+            restore_vars = [v for v in model.trainable_vars if 'fc' not in v.name]
+            loader = tf.train.Saver(restore_vars)
+            load(loader, sess, RESNET18_CIFAR10_CHECKPOINT)
+
         # Run the init ops
         model.init_updates(sess)
 
@@ -180,8 +217,8 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
             logit_mask[:] = 0
             # Train a task observing sequence of data
             if train_single_epoch:
-                # TODO: Use a fix number of batches for now to avoid complicated logic while averaging accuracies
-                num_iters = num_train_examples// batch_size
+                # Ceiling operation
+                num_iters = (num_train_examples + batch_size - 1) // batch_size
                 if cross_validate_mode:
                     if do_sampling:
                         logit_mask[test_labels] = 1.0
@@ -211,7 +248,7 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
                 if train_single_epoch and not cross_validate_mode:
                     if (iters <= 50 and iters % 5 == 0) or (iters > 50 and iters % 50 == 0):
                         # Snapshot the current performance across all tasks after each mini-batch
-                        fbatch = test_task_sequence(model, sess, datasets, task_labels, cross_validate_mode, eval_single_head=eval_single_head)
+                        fbatch = test_task_sequence(model, sess, datasets, task_labels, cross_validate_mode, eval_single_head=eval_single_head, test_labels=test_labels)
                         ftask.append(fbatch)
                         # Set the output labels over which the model needs to be trained 
                         logit_mask[:] = 0
@@ -220,10 +257,14 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
                         else:
                             logit_mask[task_labels[task]] = 1.0
 
-                offset = (iters * batch_size) % (num_train_examples - batch_size)
+                offset = iters * batch_size
+                if (offset+batch_size <= num_train_examples):
+                    residual = batch_size
+                else:
+                    residual = num_train_examples - offset
 
-                feed_dict = {model.x: train_x[offset:offset+batch_size], model.y_: train_y[offset:offset+batch_size], 
-                        model.sample_weights: task_sample_weights[offset:offset+batch_size],
+                feed_dict = {model.x: train_x[offset:offset+residual], model.y_: train_y[offset:offset+residual], 
+                        model.sample_weights: task_sample_weights[offset:offset+residual],
                         model.training_iters: num_iters, model.train_step: iters, model.keep_prob: 0.5, 
                         model.train_phase: True}
 
@@ -352,13 +393,13 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
                     print('\t\t\t\tEpisodic memory is saved for Task%d!'%(task))
 
             if train_single_epoch and not cross_validate_mode: 
-                fbatch = test_task_sequence(model, sess, datasets, task_labels, cross_validate_mode, eval_single_head=eval_single_head)
+                fbatch = test_task_sequence(model, sess, datasets, task_labels, cross_validate_mode, eval_single_head=eval_single_head, test_labels=test_labels)
                 ftask.append(fbatch)
                 ftask = np.array(ftask)
             else:
                 # List to store accuracy for all the tasks for the current trained model
-                ftask = test_task_sequence(model, sess, datasets, task_labels, cross_validate_mode, eval_single_head=eval_single_head)
-            
+                ftask = test_task_sequence(model, sess, datasets, task_labels, cross_validate_mode, eval_single_head=eval_single_head, test_labels=test_labels)
+           
             # Store the accuracies computed at task T in a list
             evals.append(ftask)
 
@@ -374,7 +415,7 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
 
     return runs
 
-def test_task_sequence(model, sess, test_data, test_tasks, cross_validate_mode, eval_single_head=True):
+def test_task_sequence(model, sess, test_data, test_tasks, cross_validate_mode, eval_single_head=True, test_labels=None):
     """
     Snapshot the current performance
     """
@@ -385,11 +426,10 @@ def test_task_sequence(model, sess, test_data, test_tasks, cross_validate_mode, 
     else:
         test_set = 'test'
 
+    logit_mask = np.zeros(TOTAL_CLASSES)
     if eval_single_head:
         # Single-head evaluation setting
-        logit_mask = np.ones(TOTAL_CLASSES)
-    else:
-        logit_mask = np.zeros(TOTAL_CLASSES)
+        logit_mask[:len(test_labels)] = 1.0
 
     for task, labels in enumerate(test_tasks):
         if not eval_single_head:

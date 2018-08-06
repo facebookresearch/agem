@@ -39,9 +39,10 @@ ARCH = 'RESNET'
 
 ## Model options
 #MODELS = ['VAN', 'PI', 'EWC', 'MAS', 'RWALK', 'GEM'] #List of valid models 
-#MODELS = ['VAN', 'PI', 'EWC', 'MAS', 'RWALK'] #List of valid models 
-MODELS = ['VAN', 'PI', 'RWALK'] #List of valid models 
-IMP_METHOD = 'VAN'
+MODELS = ['VAN', 'PI', 'EWC', 'MAS', 'RWALK'] #List of valid models 
+#MODELS = ['VAN', 'PI', 'EWC'] #List of valid models 
+#MODELS = ['MAS','RWALK'] #List of valid models 
+IMP_METHOD = 'MAS'
 SYNAP_STGTH = 75000
 FISHER_EMA_DECAY = 0.9      # Exponential moving average decay factor for Fisher computation (online Fisher)
 FISHER_UPDATE_AFTER = 50    # Number of training iterations for which the F_{\theta}^t is computed (see Eq. 10 in RWalk paper) 
@@ -293,7 +294,7 @@ def train_task_sequence(model, sess, saver, datasets, task_labels, cross_validat
                     #if (iters <= 50 and iters % 5 == 0) or (iters > 50 and iters % 50 == 0):
                     if (iters < 20) or (iters % 50 == 0): # Every batch for first 10, then every 20-th batch
                         # Snapshot the current performance across all tasks after each mini-batch
-                        fbatch = test_task_sequence(model, sess, datasets, task_labels, cross_validate_mode, eval_single_head=eval_single_head)
+                        fbatch = test_task_sequence(model, sess, datasets, task_labels, cross_validate_mode, eval_single_head=eval_single_head, test_labels=test_labels)
                         ftask[batch_dim_count] = fbatch
                         # Increment the batch_dim_count
                         batch_dim_count += 1
@@ -304,10 +305,14 @@ def train_task_sequence(model, sess, saver, datasets, task_labels, cross_validat
                         else:
                             logit_mask[task_labels[task]] = 1.0
 
-                offset = (iters * batch_size) % (num_train_examples - batch_size)
+                offset = iters * batch_size
+                if (offset+batch_size <= num_train_examples):
+                    residual = batch_size
+                else:
+                    residual = num_train_examples - offset
 
-                feed_dict = {model.x: train_x[offset:offset+batch_size], model.y_: train_y[offset:offset+batch_size], 
-                        model.sample_weights: task_sample_weights[offset:offset+batch_size],
+                feed_dict = {model.x: train_x[offset:offset+residual], model.y_: train_y[offset:offset+residual], 
+                        model.sample_weights: task_sample_weights[offset:offset+residual],
                         model.training_iters: num_iters, model.train_step: iters, model.keep_prob: 0.5, 
                         model.train_phase: True}
 
@@ -457,13 +462,13 @@ def train_task_sequence(model, sess, saver, datasets, task_labels, cross_validat
                 # Only evaluate after the last task
                 if task == NUM_TASKS - 1:
                     # List to store accuracy for all the tasks for the current trained model
-                    ftask = test_task_sequence(model, sess, datasets, task_labels, cross_validate_mode, eval_single_head=eval_single_head)
+                    ftask = test_task_sequence(model, sess, datasets, task_labels, cross_validate_mode, eval_single_head=eval_single_head, test_labels=test_labels)
             elif train_single_epoch: 
-                fbatch = test_task_sequence(model, sess, datasets, task_labels, cross_validate_mode, eval_single_head=eval_single_head)
+                fbatch = test_task_sequence(model, sess, datasets, task_labels, cross_validate_mode, eval_single_head=eval_single_head, test_labels=test_labels)
                 ftask[batch_dim_count] = fbatch 
             else:
                 # Multi-epoch training, so compute accuracy at the end
-                ftask = test_task_sequence(model, sess, datasets, task_labels, cross_validate_mode, eval_single_head=eval_single_head)
+                ftask = test_task_sequence(model, sess, datasets, task_labels, cross_validate_mode, eval_single_head=eval_single_head, test_labels=test_labels)
 
             if SAVE_MODEL_PARAMS:
                 save(saver, sess, SNAPSHOT_DIR, iters)
@@ -490,7 +495,7 @@ def train_task_sequence(model, sess, saver, datasets, task_labels, cross_validat
         runs = np.array(runs)
         return runs
 
-def test_task_sequence(model, sess, test_data, test_tasks, cross_validate_mode, eval_single_head=True):
+def test_task_sequence(model, sess, test_data, test_tasks, cross_validate_mode, eval_single_head=True, test_labels=None):
     """
     Snapshot the current performance
     """
@@ -501,11 +506,10 @@ def test_task_sequence(model, sess, test_data, test_tasks, cross_validate_mode, 
     else:
         test_set = 'test'
 
+    logit_mask = np.zeros(TOTAL_CLASSES)
     if eval_single_head:
         # Single-head evaluation setting
-        logit_mask = np.ones(TOTAL_CLASSES)
-    else:
-        logit_mask = np.zeros(TOTAL_CLASSES)
+        logit_mask[:len(test_labels)] = 1.0
 
     for task, labels in enumerate(test_tasks):
         if not eval_single_head:
@@ -576,7 +580,7 @@ def main():
 
     if args.cross_validate_mode:
         models_list = MODELS
-        learning_rate_list = [0.03, 0.01, 0.003, 0.001, 0.0003, 0.0001]
+        learning_rate_list = [0.1, 0.03, 0.01, 0.003, 0.001, 0.0003]
     else:
         #models_list = [args.imp_method]
         #learning_rate_list = [args.learning_rate]
@@ -587,35 +591,44 @@ def main():
             if args.cross_validate_mode:
                 pass
             else:
-                learning_rate_list = [0.01] # => cross-validated learning rate for SGD
+                #learning_rate_list = [0.01] # => cross-validated learning rate for SGD, Resnet-18
+                learning_rate_list = [0.001] # => cross-validated learning rate for SGD, VGG
         elif imp_method == 'PI':
             if args.cross_validate_mode:
-                synap_stgth_list = [0.1, 1, 10, 100]
+                synap_stgth_list = [0.1, 1, 10]
             else:
                 #synap_stgth_list = [args.synap_stgth]
-                synap_stgth_list = [0.01] # => cross-validated lambda
-                learning_rate_list = [0.01] # => cross-validaed learning rate for SG
+                #synap_stgth_list = [0.01] # => cross-validated lambda, Resnet-18
+                #learning_rate_list = [0.01] # => cross-validaed learning rate for SG, Resnet-18
+                synap_stgth_list = [1] # => cross-validated lambda, VGG
+                learning_rate_list = [0.001] # => cross-validaed learning rate for SG, VGG
         elif imp_method == 'EWC':
             if args.cross_validate_mode:
-                synap_stgth_list = [1, 10, 1000, 10000, 100000]
+                synap_stgth_list = [0.1, 1, 10, 100]
             else:
                 #synap_stgth_list = [args.synap_stgth]
-                synap_stgth_list = [10] # => cross-validated lambda
-                learning_rate_list = [0.01] # => cross-validaed learning rate for SG
+                #synap_stgth_list = [10] # => cross-validated lambda, Resnet-18
+                #learning_rate_list = [0.01] # => cross-validaed learning rate for SG, Resnet-18
+                synap_stgth_list = [100] # => cross-validated lambda, VGG
+                learning_rate_list = [0.001] # => cross-validaed learning rate for SG, VGG
         elif imp_method == 'MAS':
+            if args.cross_validate_mode:
+                synap_stgth_list = [0.1, 1, 10]
+            else:
+                #synap_stgth_list = [args.synap_stgth]
+                #synap_stgth_list = [0.1] # => cross-validated lambda, Resnet-18
+                #learning_rate_list = [0.01] # => cross-validaed learning rate for SG, Resnet-18
+                synap_stgth_list = [1] # => cross-validated lambda, VGG
+                learning_rate_list = [0.001] # => cross-validaed learning rate for SG, VGG
+        elif imp_method == 'RWALK':
             if args.cross_validate_mode:
                 synap_stgth_list = [0.1, 1, 10, 100]
             else:
                 #synap_stgth_list = [args.synap_stgth]
-                synap_stgth_list = [1] # => cross-validated lambda
-                learning_rate_list = [0.01] # => cross-validaed learning rate for SG
-        elif imp_method == 'RWALK':
-            if args.cross_validate_mode:
-                synap_stgth_list = [0.1, 1, 10, 100, 1000, 10000]
-            else:
-                #synap_stgth_list = [args.synap_stgth]
-                synap_stgth_list = [0.1] # => cross-validated lambda
-                learning_rate_list = [0.01] # => cross-validaed learning rate for SG
+                #synap_stgth_list = [0.1] # => cross-validated lambda, Resnet-18
+                #learning_rate_list = [0.01] # => cross-validaed learning rate for SG, Resnet-18
+                synap_stgth_list = [1] # => cross-validated lambda, VGG
+                learning_rate_list = [0.001] # => cross-validaed learning rate for SG, VGG
         elif imp_method == 'GEM':
             synap_stgth_list = [0]
 
