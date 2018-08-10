@@ -802,6 +802,8 @@ class Model:
                 (var - self.min_fisher)/ (self.max_fisher - self.min_fisher + EPSILON)) 
                     for tgt, var in zip(self.normalized_fisher_at_minima_vars, self.fisher_diagonal_at_minima)]
 
+        self.clear_attr_embed_reg = tf.assign(self.normalized_fisher_at_minima_vars[-2], tf.zeros_like(self.normalized_fisher_at_minima_vars[-2]))
+
         # Sparsify all the layers except last layer
         sparsify_fisher_ops = []
         for v in range(len(self.normalized_fisher_at_minima_vars) - 2):
@@ -922,6 +924,8 @@ class Model:
             # Normalize the fisher
             sess.run([self.get_max_fisher_vars, self.get_min_fisher_vars])
             sess.run([self.min_fisher, self.max_fisher, self.normalize_fisher_at_minima])
+            # Don't regularize over the attribute-embedding vectors
+            #sess.run(self.clear_attr_embed_reg)
             # Reset the tmp fisher vars
             sess.run(self.reset_tmp_fisher)
         elif self.imp_method == 'PI':

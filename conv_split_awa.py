@@ -36,13 +36,13 @@ OPT_MOMENTUM = 0.9
 OPT_POWER = 0.9
 VALID_ARCHS = ['CNN', 'VGG', 'RESNET']
 ARCH = 'RESNET'
+PRETRAIN = False
 
 ## Model options
 #MODELS = ['VAN', 'PI', 'EWC', 'MAS', 'RWALK', 'GEM'] #List of valid models 
 MODELS = ['VAN', 'PI', 'EWC', 'MAS', 'RWALK'] #List of valid models 
-#MODELS = ['VAN', 'PI', 'EWC'] #List of valid models 
-#MODELS = ['MAS','RWALK'] #List of valid models 
-IMP_METHOD = 'MAS'
+IMP_METHOD = 'VAN'
+#IMP_METHOD = 'MAS'
 SYNAP_STGTH = 75000
 FISHER_EMA_DECAY = 0.9      # Exponential moving average decay factor for Fisher computation (online Fisher)
 FISHER_UPDATE_AFTER = 50    # Number of training iterations for which the F_{\theta}^t is computed (see Eq. 10 in RWalk paper) 
@@ -62,6 +62,7 @@ RESNET18_IMAGENET_CHECKPOINT = './resnet-18-pretrained-imagenet/model.ckpt'
 
 ## Task split
 NUM_TASKS = 5
+MULTI_TASK = False
 
 ## Dataset specific options
 DATA_DIR= './AWA_data/Animals_with_Attributes2/'
@@ -170,21 +171,20 @@ def train_task_sequence(model, sess, saver, datasets, task_labels, cross_validat
         # Initialize all the variables in the model
         sess.run(tf.global_variables_initializer())
 
-        # Load the variables from a checkpoint
-        if model.network_arch == 'RESNET':
-            # Define loader (weights which will be loaded from a checkpoint)
-            restore_vars = [v for v in model.trainable_vars if 'fc' not in v.name]
-            loader = tf.train.Saver(restore_vars)
-            load(loader, sess, init_checkpoint)
-        elif model.network_arch == 'VGG':
-            # Load the pretrained weights from the npz file
-            weights = np.load(init_checkpoint)
-            keys = sorted(weights.keys())
-            for i, key in enumerate(keys[:-2]): # Load everything except the last layer
-                sess.run(model.trainable_vars[i].assign(weights[key]))
-        else:
-            # Use the default initialization
-            pass
+        if PRETRAIN:
+            # Load the variables from a checkpoint
+            if model.network_arch == 'RESNET':
+                # Define loader (weights which will be loaded from a checkpoint)
+                restore_vars = [v for v in model.trainable_vars if 'fc' not in v.name]
+                loader = tf.train.Saver(restore_vars)
+                load(loader, sess, init_checkpoint)
+
+            elif model.network_arch == 'VGG':
+                # Load the pretrained weights from the npz file
+                weights = np.load(init_checkpoint)
+                keys = sorted(weights.keys())
+                for i, key in enumerate(keys[:-2]): # Load everything except the last layer
+                    sess.run(model.trainable_vars[i].assign(weights[key]))
 
         # Run the init ops
         model.init_updates(sess)
@@ -238,6 +238,19 @@ def train_task_sequence(model, sess, saver, datasets, task_labels, cross_validat
                 task_train_images = datasets[task]['train']['images']
                 task_train_labels = datasets[task]['train']['labels']
 
+            # If multi_task is set then train using all the datasets of all the tasks
+            if MULTI_TASK:
+                if task == 0:
+                    for t_ in range(1, len(datasets)):
+                        task_train_images = np.concatenate((task_train_images, datasets[t_]['train']['images']), axis=0)
+                        task_train_labels = np.concatenate((task_train_labels, datasets[t_]['train']['labels']), axis=0)
+
+                else:
+                    # Skip training for this task
+                    continue
+
+            print('Received {} images, {} labels at task {}'.format(task_train_images.shape[0], task_train_labels.shape[0], task))
+
             # Test for the tasks that we've seen so far
             test_labels += task_labels[task]
 
@@ -268,6 +281,9 @@ def train_task_sequence(model, sess, saver, datasets, task_labels, cross_validat
                     logit_mask[test_labels] = 1.0
                 else:
                     logit_mask[task_labels[task]] = 1.0
+
+            if MULTI_TASK:
+                logit_mask[:] = 1.0
 
             # Randomly suffle the training examples
             perm = np.arange(num_train_examples)
@@ -460,7 +476,7 @@ def train_task_sequence(model, sess, saver, datasets, task_labels, cross_validat
 
             if cross_validate_mode:
                 # Only evaluate after the last task
-                if task == NUM_TASKS - 1:
+                if (task == NUM_TASKS - 1) or MULTI_TASK:
                     # List to store accuracy for all the tasks for the current trained model
                     ftask = test_task_sequence(model, sess, datasets, task_labels, cross_validate_mode, eval_single_head=eval_single_head, test_labels=test_labels)
             elif train_single_epoch: 
@@ -580,11 +596,10 @@ def main():
 
     if args.cross_validate_mode:
         models_list = MODELS
-        learning_rate_list = [0.1, 0.03, 0.01, 0.003, 0.001, 0.0003]
+        learning_rate_list = [0.3, 0.1, 0.03, 0.01, 0.003, 0.001]
     else:
-        #models_list = [args.imp_method]
-        #learning_rate_list = [args.learning_rate]
-        models_list = MODELS
+        models_list = [args.imp_method]
+        learning_rate_list = [args.learning_rate]
     for imp_method in models_list:
         if imp_method == 'VAN':
             synap_stgth_list = [0]
@@ -592,7 +607,8 @@ def main():
                 pass
             else:
                 #learning_rate_list = [0.01] # => cross-validated learning rate for SGD, Resnet-18
-                learning_rate_list = [0.001] # => cross-validated learning rate for SGD, VGG
+                #learning_rate_list = [0.001] # => cross-validated learning rate for SGD, VGG
+                learning_rate_list = [0.003] # => cross-validated learning rate for SGD, Resnet-18 no pretraining, 5 tasks
         elif imp_method == 'PI':
             if args.cross_validate_mode:
                 synap_stgth_list = [0.1, 1, 10]
@@ -600,26 +616,32 @@ def main():
                 #synap_stgth_list = [args.synap_stgth]
                 #synap_stgth_list = [0.01] # => cross-validated lambda, Resnet-18
                 #learning_rate_list = [0.01] # => cross-validaed learning rate for SG, Resnet-18
-                synap_stgth_list = [1] # => cross-validated lambda, VGG
-                learning_rate_list = [0.001] # => cross-validaed learning rate for SG, VGG
+                #synap_stgth_list = [1] # => cross-validated lambda, VGG
+                #learning_rate_list = [0.001] # => cross-validaed learning rate for SG, VGG
+                synap_stgth_list = [10] # => cross-validated learning rate for SGD, Resnet-18 no pretraining, 5 tasks
+                learning_rate_list = [0.003] # => cross-validated learning rate for SGD, Resnet-18 no pretraining, 5 tasks
         elif imp_method == 'EWC':
             if args.cross_validate_mode:
-                synap_stgth_list = [0.1, 1, 10, 100]
+                synap_stgth_list = [0.1, 1, 10, 100, 1000]
             else:
                 #synap_stgth_list = [args.synap_stgth]
                 #synap_stgth_list = [10] # => cross-validated lambda, Resnet-18
                 #learning_rate_list = [0.01] # => cross-validaed learning rate for SG, Resnet-18
-                synap_stgth_list = [100] # => cross-validated lambda, VGG
-                learning_rate_list = [0.001] # => cross-validaed learning rate for SG, VGG
+                #synap_stgth_list = [100] # => cross-validated lambda, VGG
+                #learning_rate_list = [0.001] # => cross-validaed learning rate for SG, VGG
+                synap_stgth_list = [100] # => cross-validated learning rate for SGD, Resnet-18 no pretraining, 5 tasks
+                learning_rate_list = [0.003] # => cross-validated learning rate for SGD, Resnet-18 no pretraining, 5 tasks
         elif imp_method == 'MAS':
             if args.cross_validate_mode:
-                synap_stgth_list = [0.1, 1, 10]
+                synap_stgth_list = [0.1, 1, 10, 100]
             else:
                 #synap_stgth_list = [args.synap_stgth]
                 #synap_stgth_list = [0.1] # => cross-validated lambda, Resnet-18
                 #learning_rate_list = [0.01] # => cross-validaed learning rate for SG, Resnet-18
-                synap_stgth_list = [1] # => cross-validated lambda, VGG
-                learning_rate_list = [0.001] # => cross-validaed learning rate for SG, VGG
+                #synap_stgth_list = [1] # => cross-validated lambda, VGG
+                #learning_rate_list = [0.001] # => cross-validaed learning rate for SG, VGG
+                synap_stgth_list = [1] # => cross-validated learning rate for SGD, Resnet-18 no pretraining, 5 tasks
+                learning_rate_list = [0.003] # => cross-validated learning rate for SGD, Resnet-18 no pretraining, 5 tasks
         elif imp_method == 'RWALK':
             if args.cross_validate_mode:
                 synap_stgth_list = [0.1, 1, 10, 100]

@@ -36,6 +36,7 @@ OPT_MOMENTUM = 0.9
 OPT_POWER = 0.9
 VALID_ARCHS = ['CNN', 'VGG', 'RESNET']
 ARCH = 'RESNET'
+PRETRAIN = False
 
 ## Model options
 #MODELS = ['VAN', 'PI', 'EWC', 'MAS', 'RWALK', 'GEM'] #List of valid models
@@ -58,6 +59,7 @@ SAVE_MODEL_PARAMS = False
 
 ## Task split
 NUM_TASKS = 20
+MULTI_TASK = False
 
 ## Dataset specific options
 DATA_DIR='CUB_data/CUB_200_2011/images'
@@ -163,21 +165,19 @@ def train_task_sequence(model, sess, saver, datasets, task_labels, cross_validat
         # Initialize all the variables in the model
         sess.run(tf.global_variables_initializer())
 
-        # Load the variables from a checkpoint
-        if model.network_arch == 'RESNET':
-            # Define loader (weights which will be loaded from a checkpoint)
-            restore_vars = [v for v in model.trainable_vars if 'fc' not in v.name]
-            loader = tf.train.Saver(restore_vars)
-            load(loader, sess, init_checkpoint)
-        elif model.network_arch == 'VGG':
-            # Load the pretrained weights from the npz file
-            weights = np.load(init_checkpoint)
-            keys = sorted(weights.keys())
-            for i, key in enumerate(keys[:-2]): # Load everything except the last layer
-                sess.run(model.trainable_vars[i].assign(weights[key]))
-        else:
-            # Use the default initialization
-            pass
+        if PRETRAIN:
+            # Load the variables from a checkpoint
+            if model.network_arch == 'RESNET':
+                # Define loader (weights which will be loaded from a checkpoint)
+                restore_vars = [v for v in model.trainable_vars if 'fc' not in v.name]
+                loader = tf.train.Saver(restore_vars)
+                load(loader, sess, init_checkpoint)
+            elif model.network_arch == 'VGG':
+                # Load the pretrained weights from the npz file
+                weights = np.load(init_checkpoint)
+                keys = sorted(weights.keys())
+                for i, key in enumerate(keys[:-2]): # Load everything except the last layer
+                    sess.run(model.trainable_vars[i].assign(weights[key]))
 
         # Run the init ops
         model.init_updates(sess)
@@ -224,6 +224,19 @@ def train_task_sequence(model, sess, saver, datasets, task_labels, cross_validat
                 task_train_images = datasets[task]['train']['images']
                 task_train_labels = datasets[task]['train']['labels']
 
+            # If multi_task is set then train using all the datasets of all the tasks
+            if MULTI_TASK:
+                if task == 0:
+                    for t_ in range(1, len(datasets)):
+                        task_train_images = np.concatenate((task_train_images, datasets[t_]['train']['images']), axis=0)
+                        task_train_labels = np.concatenate((task_train_labels, datasets[t_]['train']['labels']), axis=0)
+
+                else:
+                    # Skip training for this task
+                    continue
+
+            print('Received {} images, {} labels at task {}'.format(task_train_images.shape[0], task_train_labels.shape[0], task))
+
             # Test for the tasks that we've seen so far
             test_labels += task_labels[task]
 
@@ -255,6 +268,9 @@ def train_task_sequence(model, sess, saver, datasets, task_labels, cross_validat
                 else:
                     logit_mask[task_labels[task]] = 1.0
 
+            if MULTI_TASK:
+                logit_mask[:] = 1.0
+
             # Randomly suffle the training examples
             perm = np.arange(num_train_examples)
             np.random.shuffle(perm)
@@ -280,16 +296,23 @@ def train_task_sequence(model, sess, saver, datasets, task_labels, cross_validat
                         else:
                             logit_mask[task_labels[task]] = 1.0
 
-                offset = iters * batch_size
-                if (offset+batch_size <= num_train_examples):
-                    residual = batch_size
-                else:
-                    residual = num_train_examples - offset
+                if train_single_epoch:
+                    offset = iters * batch_size
+                    if (offset+batch_size <= num_train_examples):
+                        residual = batch_size
+                    else:
+                        residual = num_train_examples - offset
 
-                feed_dict = {model.x: train_x[offset:offset+residual], model.y_: train_y[offset:offset+residual], 
-                        model.sample_weights: task_sample_weights[offset:offset+residual],
-                        model.training_iters: num_iters, model.train_step: iters, model.keep_prob: 0.5, 
-                        model.train_phase: True}
+                    feed_dict = {model.x: train_x[offset:offset+residual], model.y_: train_y[offset:offset+residual], 
+                            model.sample_weights: task_sample_weights[offset:offset+residual],
+                            model.training_iters: num_iters, model.train_step: iters, model.keep_prob: 0.5, 
+                            model.train_phase: True}
+                else:
+                    offset = (iters * batch_size) % (num_train_examples - batch_size)
+                    feed_dict = {model.x: train_x[offset:offset+batch_size], model.y_: train_y[offset:offset+batch_size], 
+                            model.sample_weights: task_sample_weights[offset:offset+batch_size],
+                            model.training_iters: num_iters, model.train_step: iters, model.keep_prob: 0.5, 
+                            model.train_phase: True}
 
                 if model.imp_method == 'VAN':
                     feed_dict[model.output_mask] = logit_mask
@@ -367,7 +390,7 @@ def train_task_sequence(model, sess, saver, datasets, task_labels, cross_validat
                         model.train, model.update_small_omega, model.reg_loss], feed_dict=feed_dict)
 
 
-                if (iters % 10 == 0):
+                if (iters % 50 == 0):
                     print('Step {:d} {:.3f}'.format(iters, loss))
 
                 if (math.isnan(loss)):
@@ -436,7 +459,7 @@ def train_task_sequence(model, sess, saver, datasets, task_labels, cross_validat
 
             if cross_validate_mode:
                 # Only evaluate after the last task
-                if task == NUM_TASKS - 1:
+                if (task == NUM_TASKS - 1) or MULTI_TASK:
                     # List to store accuracy for all the tasks for the current trained model
                     ftask = test_task_sequence(model, sess, datasets, task_labels, cross_validate_mode, eval_single_head=eval_single_head, test_labels=test_labels)
             elif train_single_epoch: 
@@ -555,14 +578,11 @@ def main():
     datasets = construct_split_cub(task_labels, args.data_dir, CUB_TRAIN_LIST, CUB_TEST_LIST, IMG_HEIGHT, IMG_WIDTH)
 
     if args.cross_validate_mode:
-        #models_list = MODELS
-        #learning_rate_list = [0.003, 0.001, 0.0003]
-        models_list = [args.imp_method]
-        learning_rate_list = [args.learning_rate]
+        models_list = MODELS
+        learning_rate_list = [0.3, 0.1, 0.03, 0.01, 0.003, 0.001, 0.0003]
     else:
         models_list = [args.imp_method]
-        #learning_rate_list = [args.learning_rate]
-        #models_list = MODELS
+        learning_rate_list = [args.learning_rate]
     for imp_method in models_list:
         if imp_method == 'VAN':
             synap_stgth_list = [0]
@@ -573,8 +593,8 @@ def main():
                 learning_rate_list = [0.001] # => cross-validated learning rate for SGD, VGG
         elif imp_method == 'PI':
             if args.cross_validate_mode:
-                #synap_stgth_list = [0.1, 1, 10, 100]
-                synap_stgth_list = [args.synap_stgth]
+                synap_stgth_list = [0.1, 1, 10, 100]
+                #synap_stgth_list = [args.synap_stgth]
             else:
                 #synap_stgth_list = [args.synap_stgth]
                 #synap_stgth_list = [0.1] # => cross-validated lambda, Renser
@@ -583,8 +603,8 @@ def main():
                 learning_rate_list = [0.001] # => cross-validaed learning rate for SGD, VGG
         elif imp_method == 'EWC':
             if args.cross_validate_mode:
-                #synap_stgth_list = [0.1, 1, 10, 100, 1000]
-                synap_stgth_list = [args.synap_stgth]
+                synap_stgth_list = [0.1, 1, 10, 100, 1000]
+                #synap_stgth_list = [args.synap_stgth]
             else:
                 #synap_stgth_list = [args.synap_stgth]
                 #synap_stgth_list = [1] # => cross-validated lambda, Resnet
@@ -593,8 +613,8 @@ def main():
                 learning_rate_list = [0.001] # => cross-validaed learning rate for SGD, VGG
         elif imp_method == 'MAS':
             if args.cross_validate_mode:
-                #synap_stgth_list = [0.1, 1, 10]
-                synap_stgth_list = [args.synap_stgth]
+                synap_stgth_list = [0.1, 1, 10]
+                #synap_stgth_list = [args.synap_stgth]
             else:
                 #synap_stgth_list = [args.synap_stgth]
                 #synap_stgth_list = [0.1] # => cross-validated lambda, Resnet
@@ -603,8 +623,8 @@ def main():
                 learning_rate_list = [0.001] # => cross-validaed learning rate for SGD, VGG
         elif imp_method == 'RWALK':
             if args.cross_validate_mode:
-                #synap_stgth_list = [0.1, 1, 10, 100, 1000]
-                synap_stgth_list = [args.synap_stgth]
+                synap_stgth_list = [0.1, 1, 10, 100, 1000]
+                #synap_stgth_list = [args.synap_stgth]
             else:
                 #synap_stgth_list = [args.synap_stgth]
                 #synap_stgth_list = [1] # => cross-validated lambda, Resnet
@@ -653,7 +673,7 @@ def main():
                     y_ = tf.placeholder(tf.float32, shape=[None, TOTAL_CLASSES])
 
                     if not args.train_single_epoch: 
-                    # Define ops for data augmentation
+                        # Define ops for data augmentation
                         x_aug = image_scaling(x)
                         x_aug = random_crop_and_pad_image(x_aug, IMG_HEIGHT, IMG_WIDTH)
 

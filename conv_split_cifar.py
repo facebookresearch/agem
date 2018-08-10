@@ -34,7 +34,7 @@ VALID_OPTIMS = ['SGD', 'MOMENTUM', 'ADAM']
 OPTIM = 'SGD'
 OPT_MOMENTUM = 0.9
 OPT_POWER = 0.9
-VALID_ARCHS = ['CNN', 'RESNET']
+VALID_ARCHS = ['CNN', 'RESNET', 'VGG']
 ARCH = 'RESNET'
 
 ## Model options
@@ -56,6 +56,7 @@ RESNET18_CIFAR10_CHECKPOINT = './resnet-18-pretrained-cifar10/model.ckpt-19999'
 
 ## Task split
 NUM_TASKS = 20
+MULTI_TASK = False
 
 # Define function to load/ store training weights. We will use ImageNet initialization later on
 def save(saver, sess, logdir, step):
@@ -149,13 +150,6 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
         # Initialize all the variables in the model
         sess.run(tf.global_variables_initializer())
 
-        # Load the variables from a checkpoint
-        if model.network_arch == 'RESNET':
-            # Define loader (weights which will be loaded from a checkpoint)
-            restore_vars = [v for v in model.trainable_vars if 'fc' not in v.name]
-            loader = tf.train.Saver(restore_vars)
-            load(loader, sess, RESNET18_CIFAR10_CHECKPOINT)
-
         # Run the init ops
         model.init_updates(sess)
 
@@ -201,6 +195,19 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
                             datasets[task]['train']['labels'], datasets[task]['validation']['images'], 
                             datasets[task]['validation']['labels'])
 
+            # If multi_task is set then train using all the datasets of all the tasks
+            if MULTI_TASK:
+                if task == 0:
+                    for t_ in range(1, len(datasets)):
+                        task_train_images = np.concatenate((task_train_images, datasets[t_]['train']['images']), axis=0)
+                        task_train_labels = np.concatenate((task_train_labels, datasets[t_]['train']['labels']), axis=0)
+
+                else:
+                    # Skip training for this task
+                    continue
+
+            print('Received {} images, {} labels at task {}'.format(task_train_images.shape[0], task_train_labels.shape[0], task))
+
             # Test for the tasks that we've seen so far
             test_labels += task_labels[task]
 
@@ -232,6 +239,9 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
                 else:
                     logit_mask[task_labels[task]] = 1.0
 
+            if MULTI_TASK:
+                logit_mask[:] = 1.0
+
             # Randomly suffle the training examples
             perm = np.arange(num_train_examples)
             np.random.shuffle(perm)
@@ -257,16 +267,23 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
                         else:
                             logit_mask[task_labels[task]] = 1.0
 
-                offset = iters * batch_size
-                if (offset+batch_size <= num_train_examples):
-                    residual = batch_size
-                else:
-                    residual = num_train_examples - offset
+                if train_single_epoch:
+                    offset = iters * batch_size
+                    if (offset+batch_size <= num_train_examples):
+                        residual = batch_size
+                    else:
+                        residual = num_train_examples - offset
 
-                feed_dict = {model.x: train_x[offset:offset+residual], model.y_: train_y[offset:offset+residual], 
-                        model.sample_weights: task_sample_weights[offset:offset+residual],
-                        model.training_iters: num_iters, model.train_step: iters, model.keep_prob: 0.5, 
-                        model.train_phase: True}
+                    feed_dict = {model.x: train_x[offset:offset+residual], model.y_: train_y[offset:offset+residual], 
+                            model.sample_weights: task_sample_weights[offset:offset+residual],
+                            model.training_iters: num_iters, model.train_step: iters, model.keep_prob: 0.5, 
+                            model.train_phase: True}
+                else:
+                    offset = (iters * batch_size) % (num_train_examples - batch_size)
+                    feed_dict = {model.x: train_x[offset:offset+batch_size], model.y_: train_y[offset:offset+batch_size], 
+                            model.sample_weights: task_sample_weights[offset:offset+batch_size],
+                            model.training_iters: num_iters, model.train_step: iters, model.keep_prob: 0.5, 
+                            model.train_phase: True}
 
                 if model.imp_method == 'VAN':
                     feed_dict[model.output_mask] = logit_mask
