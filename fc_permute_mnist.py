@@ -196,8 +196,8 @@ def train_task_sequence(model, sess, datasets, cross_validate_mode, train_single
 
                 offset = (iters * batch_size) % (num_train_examples - batch_size)
 
-                #feed_dict = {model.x: train_x[offset:offset+batch_size], model.y_: train_y[offset:offset+batch_size], 
-                feed_dict = {model.x: np.reshape(train_x[offset:offset+batch_size], (-1, IMG_HEIGHT, IMG_WIDTH, IMG_CHANNELS)), model.y_: train_y[offset:offset+batch_size], 
+                feed_dict = {model.x: train_x[offset:offset+batch_size], model.y_: train_y[offset:offset+batch_size], 
+                #feed_dict = {model.x: np.reshape(train_x[offset:offset+batch_size], (-1, IMG_HEIGHT, IMG_WIDTH, IMG_CHANNELS)), model.y_: train_y[offset:offset+batch_size], 
                         model.sample_weights: task_sample_weights[offset:offset+batch_size],
                         model.training_iters: num_iters, model.train_step: iters, model.keep_prob: 1.0, 
                         model.output_mask: logit_mask, model.train_phase: True}
@@ -327,8 +327,8 @@ def test_task_sequence(model, sess, test_data, cross_validate_mode, eval_single_
     else:
         test_set = 'test'
     for task, _ in enumerate(test_data):
-        #feed_dict = {model.x: test_data[task][test_set]['images'], 
-        feed_dict = {model.x: np.reshape(test_data[task][test_set]['images'], (-1, IMG_HEIGHT, IMG_WIDTH, IMG_CHANNELS)), 
+        feed_dict = {model.x: test_data[task][test_set]['images'], 
+        #feed_dict = {model.x: np.reshape(test_data[task][test_set]['images'], (-1, IMG_HEIGHT, IMG_WIDTH, IMG_CHANNELS)), 
                 model.y_: test_data[task][test_set]['labels'], model.keep_prob: 1.0, 
                 model.output_mask: logit_mask, model.train_phase: False}
         acc = model.accuracy.eval(feed_dict = feed_dict)
@@ -395,8 +395,8 @@ def main():
         tf.set_random_seed(RANDOM_SEED)
 
         # Define Input and Output of the model
-        #x = tf.placeholder(tf.float32, shape=[None, INPUT_FEATURE_SIZE])
-        x = tf.placeholder(tf.float32, shape=[None, IMG_HEIGHT, IMG_WIDTH, IMG_CHANNELS])
+        x = tf.placeholder(tf.float32, shape=[None, INPUT_FEATURE_SIZE])
+        #x = tf.placeholder(tf.float32, shape=[None, IMG_HEIGHT, IMG_WIDTH, IMG_CHANNELS])
         y_ = tf.placeholder(tf.float32, shape=[None, TOTAL_CLASSES])
 
         # Define the optimizer
