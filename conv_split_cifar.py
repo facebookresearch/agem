@@ -165,9 +165,6 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
         # List to store the classes that we have so far - used at test time
         test_labels = []
 
-        # Labels for all the tasks that we have seen in the past
-        prev_task_labels = []
-
         if model.imp_method == 'GEM':
             # List to store the episodic memories of the previous tasks
             task_based_memory = []
@@ -176,6 +173,8 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
             # Reserve a space for episodic memory
             episodic_images = np.zeros([episodic_mem_size, IMG_HEIGHT, IMG_WIDTH, IMG_CHANNELS])
             episodic_labels = np.zeros([episodic_mem_size, TOTAL_CLASSES])
+            # Labels for all the tasks that we have seen in the past
+            prev_task_labels = []
 
         if do_sampling:
             # List to store important samples from the previous tasks
@@ -342,23 +341,18 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
                         # Compute the gradients on the episodic memory of all the previous tasks
                         for prev_task in range(task):
                             # T-th task gradients
-                            # Note that the model.train_phase flag is false to avoid updating the batch norm params while doing forward pass on prev tasks
                             logit_mask[:] = 0
                             logit_mask[task_labels[prev_task]] = 1.0
-                            sess.run([model.task_grads, model.store_task_gradients], feed_dict={model.x: task_based_memory[prev_task]['images'], 
+                            sess.run(model.store_ref_grads, feed_dict={model.x: task_based_memory[prev_task]['images'], 
                                 model.y_: task_based_memory[prev_task]['labels'], model.task_id: prev_task, model.keep_prob: 1.0, 
-                                model.output_mask: logit_mask, model.train_phase: False})
+                                model.output_mask: logit_mask, model.train_phase: True})
 
                         # Compute the gradient on the mini-batch of the current task
                         logit_mask[:] = 0
                         logit_mask[task_labels[task]] = 1.0
                         feed_dict[model.output_mask] = logit_mask
                         feed_dict[model.task_id] = task
-                        _, _,loss = sess.run([model.task_grads, model.store_task_gradients, model.reg_loss], feed_dict=feed_dict)
-                        # Store the gradients
-                        sess.run([model.gem_gradient_update, model.store_grads], feed_dict={model.task_id: task})
-                        # Apply the gradients
-                        sess.run(model.train_subseq_tasks)
+                        _, loss = sess.run([model.train_subseq_tasks, model.reg_loss], feed_dict=feed_dict)
 
                 elif model.imp_method == 'S-GEM':
                     if task == 0:
@@ -413,8 +407,9 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
 
             print('\t\t\t\tTraining for Task%d done!'%(task))
 
-            # Update the previous task labels
-            prev_task_labels += task_labels[task]
+            if model.imp_method == 'S-GEM':
+                # Update the previous task labels
+                prev_task_labels += task_labels[task]
 
             # Compute the inter-task updates, Fisher/ importance scores etc
             # Don't calculate the task updates for the last task

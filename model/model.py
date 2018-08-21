@@ -120,7 +120,6 @@ class Model:
         self.score_vars = []
         self.normalized_fisher_at_minima_vars = []
         self.weights_delta_old_vars = []
-        self.gem_reg_grads = []
         self.ref_grads = []
         self.projected_gradients_list = []
 
@@ -266,7 +265,8 @@ class Model:
             phi_x = self.resnet18_conv_feedforward(x, kernels, filters, strides)
 
         # Get the attributes embedding
-        attr_embed = self.get_attribute_embedding(self.class_attr, phi_x) # Does not contain biases yet, Dimension: TOTAL_CLASSES x image_feature_dim
+        image_feature_dim = phi_x.get_shape().as_list()[1]
+        attr_embed = self.get_attribute_embedding(self.class_attr, image_feature_dim) # Does not contain biases yet, Dimension: TOTAL_CLASSES x image_feature_dim
         # Add the biases now
         last_layer_biases = bias_variable([self.total_classes], name='attr_embed_b')
         self.trainable_vars.append(last_layer_biases)
@@ -548,14 +548,13 @@ class Model:
             return logits
 
 
-    def get_attribute_embedding(self, attr, image_feature):
+    def get_attribute_embedding(self, attr, image_feature_dim):
         """
         Get attribute embedding using a simple FC network
 
         Returns:
             Embedding vector of k x ATTR_DIMS 
         """
-        image_feature_dim = image_feature.get_shape().as_list()[1]
         w = weight_variable([self.attr_dims, image_feature_dim], name='attr_embed_w')
         self.trainable_vars.append(w)
         # Return the inner product of attribute matrix and weight vector. 
@@ -655,7 +654,7 @@ class Model:
                 # List of variables to store hebbian information
                 self.hebbian_score_vars.append(tf.Variable(tf.zeros(self.trainable_vars[v].get_shape()), trainable=False))
             elif self.imp_method == 'GEM': 
-                self.gem_reg_grads.append(tf.Variable(tf.zeros(self.trainable_vars[v].get_shape()), trainable=False))
+                self.projected_gradients_list.append(tf.Variable(tf.zeros(self.trainable_vars[v].get_shape()), trainable=False))
             elif self.imp_method == 'S-GEM':
                 self.ref_grads.append(tf.Variable(tf.zeros(self.trainable_vars[v].get_shape()), trainable=False))
                 self.projected_gradients_list.append(tf.Variable(tf.zeros(self.trainable_vars[v].get_shape()), trainable=False))
@@ -866,51 +865,21 @@ class Model:
         Define operations for Gradients Episodic Memory (GEM) method
         """
         # Compute the gradients for a given task id
-        self.task_grads = tf.gradients(self.reg_loss, self.trainable_vars)
-   
-        with tf.control_dependencies(self.task_grads): 
-            self.store_task_gradients = tf.assign(self.G[self.task_id], tf.concat([tf.reshape(grad, [-1]) for grad in self.task_grads], 0))
+        grads = tf.gradients(self.reg_loss, self.trainable_vars)
+        flat_grads =  tf.concat([tf.reshape(grad, [-1]) for grad in grads], 0)
+        self.store_ref_grads = tf.assign(self.G[self.task_id], flat_grads)
 
         def projectgradients_tfn():
             return tf.py_func(project2cone2, [self.G[self.task_id], self.G[:self.task_id]], [tf.float32])
 
-        # Check if any of the constraints in GEM is violated. If yes, then solve the QP
-        self.gem_gradient_update = tf.cond(tf.equal(tf.reduce_sum(tf.cast(tf.less(tf.matmul(tf.expand_dims(self.G[self.task_id], axis=0), 
-            tf.transpose(self.G)), 0), tf.int32)), 0), lambda: tf.identity(self.G[self.task_id]), projectgradients_tfn) 
-
-        # Define ops to store the gradients
-        with tf.control_dependencies([self.gem_gradient_update]):
-            offset = 0
-            store_grad_ops = []
-            for v in self.gem_reg_grads:
-                shape = v.get_shape()
-                v_params = 1
-                for dim in shape:
-                    v_params *= dim.value
-                store_grad_ops.append(tf.assign(v, tf.reshape(self.gem_gradient_update[offset:offset+v_params], shape)))
-                offset += v_params
-            self.store_grads = tf.group(*store_grad_ops)
-
-        # Define training operations for the first and the subsequent tasks
-        self.train_first_task = self.opt.apply_gradients(self.reg_gradients_vars)
-        self.train_subseq_tasks = self.opt.apply_gradients(zip(self.gem_reg_grads, self.trainable_vars)) #TODO: Probably don't want to update the last layer weights of the previous tasks?
-
-    def create_stochastic_gem_ops(self):
-        """
-        Define operations for Stochastic GEM
-        """
-        grads = tf.gradients(self.reg_loss, self.trainable_vars)
-        # Reference gradient on previous tasks
-        self.store_ref_grads = [tf.assign(ref, grad) for ref, grad in zip(self.ref_grads, grads)]
-        flat_ref_grads =  tf.concat([tf.reshape(grad, [-1]) for grad in self.ref_grads], 0)
-        # Grandient on the current task
-        task_grads = tf.concat([tf.reshape(grad, [-1]) for grad in grads], 0)
-        with tf.control_dependencies([task_grads]):
-            dotp = tf.reduce_sum(tf.multiply(task_grads, flat_ref_grads))
-            ref_mag = tf.reduce_sum(tf.multiply(flat_ref_grads, flat_ref_grads))
-            proj = task_grads - ((dotp/ ref_mag) * flat_ref_grads)
-            projected_gradients = tf.cond(tf.greater_equal(dotp, 0), lambda: tf.identity(task_grads), lambda: tf.identity(proj))
-            # Convert the projected gradients into a list
+        with tf.control_dependencies([flat_grads]):
+            # Project the current gradient if it violates any of the constraints
+            consistent_flat_grad = tf.expand_dims(flat_grads, axis=1)
+            dotp = tf.matmul(self.G, consistent_flat_grad)
+            proj = tf.py_func(project2cone2, [flat_grads, self.G[:self.task_id]], [tf.float32])
+            proj_cond = tf.reduce_sum(tf.cast(tf.less(dotp, 0), tf.int32))
+            projected_gradients = tf.cond(tf.greater(proj_cond, 0), projectgradients_tfn, lambda: tf.identity(flat_grads))
+            # Convert the flat projected gradient vector into a list
             offset = 0
             store_proj_grad_ops = []
             for v in self.projected_gradients_list:
@@ -921,11 +890,44 @@ class Model:
                 store_proj_grad_ops.append(tf.assign(v, tf.reshape(projected_gradients[offset:offset+v_params], shape)))
                 offset += v_params
             self.store_proj_grads = tf.group(*store_proj_grad_ops)
-    
+            # Define training operations for the tasks > 1
             with tf.control_dependencies([self.store_proj_grads]):
-                self.train_subseq_tasks = self.opt.apply_gradients(zip(self.projected_gradients_list, self.trainable_vars)) #TODO: Probably don't want to update the last layer weights of the previous tasks?
+                self.train_subseq_tasks = self.opt.apply_gradients(zip(self.projected_gradients_list, self.trainable_vars))
 
-        # Define training operations for the first and the subsequent tasks
+        # Define training operations for the first task
+        self.train_first_task = self.opt.apply_gradients(self.reg_gradients_vars)
+
+    def create_stochastic_gem_ops(self):
+        """
+        Define operations for Stochastic GEM
+        """
+        grads = tf.gradients(self.reg_loss, self.trainable_vars)
+        # Reference gradient for previous tasks
+        self.store_ref_grads = [tf.assign(ref, grad) for ref, grad in zip(self.ref_grads, grads)]
+        flat_ref_grads =  tf.concat([tf.reshape(grad, [-1]) for grad in self.ref_grads], 0)
+        # Grandient on the current task
+        task_grads = tf.concat([tf.reshape(grad, [-1]) for grad in grads], 0)
+        with tf.control_dependencies([task_grads]):
+            dotp = tf.reduce_sum(tf.multiply(task_grads, flat_ref_grads))
+            ref_mag = tf.reduce_sum(tf.multiply(flat_ref_grads, flat_ref_grads))
+            proj = task_grads - ((dotp/ ref_mag) * flat_ref_grads)
+            projected_gradients = tf.cond(tf.greater_equal(dotp, 0), lambda: tf.identity(task_grads), lambda: tf.identity(proj))
+            # Convert the flat projected gradient vector into a list
+            offset = 0
+            store_proj_grad_ops = []
+            for v in self.projected_gradients_list:
+                shape = v.get_shape()
+                v_params = 1
+                for dim in shape:
+                    v_params *= dim.value
+                store_proj_grad_ops.append(tf.assign(v, tf.reshape(projected_gradients[offset:offset+v_params], shape)))
+                offset += v_params
+            self.store_proj_grads = tf.group(*store_proj_grad_ops)
+            # Define training operations for the tasks > 1
+            with tf.control_dependencies([self.store_proj_grads]):
+                self.train_subseq_tasks = self.opt.apply_gradients(zip(self.projected_gradients_list, self.trainable_vars))
+
+        # Define training operations for the first task
         self.train_first_task = self.opt.apply_gradients(self.reg_gradients_vars)
 
 

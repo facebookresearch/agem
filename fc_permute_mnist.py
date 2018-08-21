@@ -44,7 +44,7 @@ SYNAP_STGTH = 75000
 FISHER_EMA_DECAY = 0.9      # Exponential moving average decay factor for Fisher computation (online Fisher)
 FISHER_UPDATE_AFTER = 10    # Number of training iterations for which the F_{\theta}^t is computed (see Eq. 10 in RWalk paper) 
 TOTAL_EPISODIC_MEMORY = 5120    # Total episodic memory size
-SAMPLES_PER_CLASS = 20   # Number of samples per task
+SAMPLES_PER_CLASS = 25   # Number of samples per task
 INPUT_FEATURE_SIZE = 784
 IMG_HEIGHT = 28
 IMG_WIDTH = 28
@@ -53,6 +53,7 @@ TOTAL_CLASSES = 10          # Total number of classes in the dataset
 EPS_MEM_BATCH_SIZE = 64
 DEBUG_EPISODIC_MEMORY = False
 HERDING_BASED_SAMPLING = False
+USE_GPU = True
 
 ## Logging, saving and testing options
 LOG_DIR = './permute_mnist_results'
@@ -178,6 +179,7 @@ def train_task_sequence(model, sess, datasets, cross_validate_mode, train_single
                 else:
                     # Skip training for this task
                     continue
+            print('Received {} images, {} labels at task {}'.format(task_train_images.shape[0], task_train_labels.shape[0], task))
 
             # Declare variables to store sample importance if sampling flag is set
             if do_sampling:
@@ -251,18 +253,13 @@ def train_task_sequence(model, sess, datasets, cross_validate_mode, train_single
                         # Compute the gradients on the episodic memory of all the previous tasks
                         for prev_task in range(task):
                             # T-th task gradients.
-                            # Note that the model.train_phase flag is false to avoid updating the batch norm params while doing forward pass on prev tasks
-                            sess.run([model.task_grads, model.store_task_gradients], feed_dict={model.x: task_based_memory[prev_task]['images'],
+                            sess.run(model.store_ref_grads, feed_dict={model.x: task_based_memory[prev_task]['images'],
                                 model.y_: task_based_memory[prev_task]['labels'], model.task_id: prev_task, model.keep_prob: 1.0, 
-                                model.output_mask: logit_mask, model.train_phase: False})
+                                model.output_mask: logit_mask, model.train_phase: True})
 
                         # Compute the gradient on the mini-batch of the current task
                         feed_dict[model.task_id] = task
-                        _, _,loss = sess.run([model.task_grads, model.store_task_gradients, model.reg_loss], feed_dict=feed_dict)
-                        # Store the gradients
-                        sess.run([model.gem_gradient_update, model.store_grads], feed_dict={model.task_id: task})
-                        # Apply the gradients
-                        sess.run(model.train_subseq_tasks)
+                        _, loss = sess.run([model.train_subseq_tasks, model.reg_loss], feed_dict=feed_dict)
 
                 elif model.imp_method == 'S-GEM':
                     if task == 0:
@@ -478,8 +475,13 @@ def main():
                 args.fisher_ema_decay, network_arch=args.arch)
 
         # Set up tf session and initialize variables.
-        config = tf.ConfigProto()
-        config.gpu_options.allow_growth = True
+        if USE_GPU:
+            config = tf.ConfigProto()
+            config.gpu_options.allow_growth = True
+        else:
+            config = tf.ConfigProto(
+                    device_count = {'GPU': 0}
+                    )
 
         with tf.Session(config=config, graph=graph) as sess:
             runs = train_task_sequence(model, sess, datasets, args.cross_validate_mode, args.train_single_epoch, args.eval_single_head, 
