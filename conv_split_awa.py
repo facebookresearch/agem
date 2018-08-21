@@ -15,7 +15,7 @@ from copy import deepcopy
 from six.moves import cPickle as pickle
 
 from utils.data_utils import image_scaling, random_crop_and_pad_image, random_horizontal_flip, construct_split_awa
-from utils.utils import get_sample_weights, sample_from_dataset, concatenate_datasets, samples_for_each_class, sample_from_dataset_icarl
+from utils.utils import get_sample_weights, sample_from_dataset, update_episodic_memory, concatenate_datasets, samples_for_each_class, sample_from_dataset_icarl
 from utils.vis_utils import plot_acc_multiple_runs, plot_histogram, snapshot_experiment_meta_data, snapshot_experiment_eval
 from model import Model
 
@@ -39,18 +39,22 @@ ARCH = 'RESNET'
 PRETRAIN = False
 
 ## Model options
-#MODELS = ['VAN', 'PI', 'EWC', 'MAS', 'RWALK', 'GEM'] #List of valid models 
-MODELS = ['VAN', 'PI', 'EWC', 'MAS', 'RWALK'] #List of valid models 
+MODELS = ['VAN', 'PI', 'EWC', 'MAS', 'RWALK', 'M-EWC', 'GEM', 'S-GEM'] #List of valid models 
 IMP_METHOD = 'VAN'
 #IMP_METHOD = 'MAS'
 SYNAP_STGTH = 75000
 FISHER_EMA_DECAY = 0.9      # Exponential moving average decay factor for Fisher computation (online Fisher)
 FISHER_UPDATE_AFTER = 50    # Number of training iterations for which the F_{\theta}^t is computed (see Eq. 10 in RWalk paper) 
-MEMORY_SIZE_PER_TASK = 25   # Number of samples per task
+TOTAL_EPISODIC_MEMORY = 1000    # Total episodic memory size
+SAMPLES_PER_CLASS = 25   # Number of samples per task
 IMG_HEIGHT = 224
 IMG_WIDTH = 224
 IMG_CHANNELS = 3
 TOTAL_CLASSES = 50          # Total number of classes in the dataset 
+MEASURE_CONVERGENCE_AFTER = 0.9
+EPS_MEM_BATCH_SIZE = 32
+DEBUG_EPISODIC_MEMORY = False
+HERDING_BASED_SAMPLING = False
 
 ## Logging, saving and testing options
 LOG_DIR = './split_awa_results'
@@ -140,7 +144,7 @@ def get_arguments():
                        help="Number of training iterations after which the Fisher will be updated.")
     parser.add_argument("--do-sampling", action="store_true",
                        help="Whether to do sampling")
-    parser.add_argument("--mem-size", type=int, default=MEMORY_SIZE_PER_TASK,
+    parser.add_argument("--mem-size", type=int, default=TOTAL_EPISODIC_MEMORY,
                        help="Number of samples per class from previous tasks.")
     parser.add_argument("--data-dir", type=str, default=DATA_DIR,
                        help="Directory from where the AWA data will be read.\
@@ -153,7 +157,7 @@ def get_arguments():
     return parser.parse_args()
 
 def train_task_sequence(model, sess, saver, datasets, task_labels, cross_validate_mode, train_single_epoch, eval_single_head, do_sampling, 
-        samples_per_class, train_iters, batch_size, num_runs, init_checkpoint):
+        episodic_mem_size, train_iters, batch_size, num_runs, init_checkpoint):
     """
     Train and evaluate LLL system such that we only see a example once
     Args:
@@ -195,9 +199,17 @@ def train_task_sequence(model, sess, saver, datasets, task_labels, cross_validat
         # List to store the classes that we have so far - used at test time
         test_labels = []
 
+        # Labels for all the tasks that we have seen in the past
+        prev_task_labels = []
+
         if model.imp_method == 'GEM':
             # List to store the episodic memories of the previous tasks
             task_based_memory = []
+
+        if model.imp_method == 'S-GEM':
+            # Reserve a space for episodic memory
+            episodic_images = np.zeros([episodic_mem_size, IMG_HEIGHT, IMG_WIDTH, IMG_CHANNELS])
+            episodic_labels = np.zeros([episodic_mem_size, TOTAL_CLASSES])
 
         if do_sampling:
             # List to store important samples from the previous tasks
@@ -206,12 +218,6 @@ def train_task_sequence(model, sess, saver, datasets, task_labels, cross_validat
 
         # Mask for softmax 
         logit_mask = np.zeros(TOTAL_CLASSES)
-
-        # Loss array, for how many fix number of iterations we are fine with loss not decreasing
-        loss_world = np.zeros([4])
-        loss_world[:] = float("inf")
-        i_am_increasing = 0
-        my_threshold = 4
 
         # Compute the maximum size of batch dimension
         task_num_samples = []
@@ -304,6 +310,9 @@ def train_task_sequence(model, sess, saver, datasets, task_labels, cross_validat
                 # Because we will evaluate after every task
                 ftask = []
 
+            # Number of iterations after which convergence is checked
+            convergence_iters = int(num_iters * MEASURE_CONVERGENCE_AFTER)
+
             # Training loop for task T
             for iters in range(num_iters):
                 if train_single_epoch and not cross_validate_mode:
@@ -336,7 +345,7 @@ def train_task_sequence(model, sess, saver, datasets, task_labels, cross_validat
                     feed_dict[model.output_mask] = logit_mask
                     _, loss = sess.run([model.train, model.reg_loss], feed_dict=feed_dict)
 
-                elif model.imp_method == 'EWC':
+                elif model.imp_method == 'EWC' or model.imp_method == 'M-EWC':
                     feed_dict[model.output_mask] = logit_mask
                     # If first iteration of the first task then set the initial value of the running fisher
                     if task == 0 and iters == 0:
@@ -346,7 +355,11 @@ def train_task_sequence(model, sess, saver, datasets, task_labels, cross_validat
                         sess.run(model.set_running_fisher)
                         sess.run(model.reset_tmp_fisher)
                     
-                    _, _, loss = sess.run([model.set_tmp_fisher, model.train, model.reg_loss], feed_dict=feed_dict)
+                    if (iters >= convergence_iters) and (model.imp_method == 'M-EWC'):
+                        _, _, _, _, loss = sess.run([model.weights_old_ops_grouped, model.set_tmp_fisher, model.train, model.update_small_omega, 
+                            model.reg_loss], feed_dict=feed_dict)
+                    else:
+                        _, _, loss = sess.run([model.set_tmp_fisher, model.train, model.reg_loss], feed_dict=feed_dict)
 
                 elif model.imp_method == 'PI':
                     feed_dict[model.output_mask] = logit_mask
@@ -386,6 +399,29 @@ def train_task_sequence(model, sess, saver, datasets, task_labels, cross_validat
                         # Apply the gradients
                         sess.run(model.train_subseq_tasks)
 
+                elif model.imp_method == 'S-GEM':
+                    if task == 0:
+                        logit_mask[:] = 0
+                        logit_mask[task_labels[task]] = 1.0
+                        feed_dict[model.output_mask] = logit_mask
+                        # Normal application of gradients
+                        _, loss = sess.run([model.train_first_task, model.reg_loss], feed_dict=feed_dict)
+                    else:
+                        ## Compute and store the reference gradients on the previous tasks
+                        # Set the mask for all the previous tasks so far
+                        logit_mask[:] = 0
+                        logit_mask[prev_task_labels] = 1.0
+                        # Sample a random subset from episodic memory buffer
+                        mem_sample_mask = np.random.choice(episodic_mem_size, EPS_MEM_BATCH_SIZE, replace=False) # Sample without replacement so that we don't sample an example more than once
+                        # Store the reference gradient
+                        sess.run(model.store_ref_grads, feed_dict={model.x: episodic_images[mem_sample_mask], model.y_: episodic_labels[mem_sample_mask],
+                            model.keep_prob: 1.0, model.output_mask: logit_mask, model.train_phase: True})
+                        # Compute the gradient for current task and project if need be
+                        logit_mask[:] = 0
+                        logit_mask[task_labels[task]] = 1.0
+                        feed_dict[model.output_mask] = logit_mask
+                        _, loss = sess.run([model.train_subseq_tasks, model.reg_loss], feed_dict=feed_dict)
+
                 elif model.imp_method == 'RWALK':
                     feed_dict[model.output_mask] = logit_mask
                     # If first iteration of the first task then set the initial value of the running fisher
@@ -416,21 +452,11 @@ def train_task_sequence(model, sess, saver, datasets, task_labels, cross_validat
                     break_training = 1
                     break
 
-                """
-                if (iters > 1000 and iters % 100 == 0):
-                    # Check if the loss has become stagnant
-                    if loss < loss_world.max():
-                        loss_world[np.argmax(loss_world)] = loss
-                        i_am_increasing = 0
-                    else:                    
-                        i_am_increasing += 1
-
-                    if (i_am_increasing > my_threshold):
-                        print('Training exited as loss was not decreasing on training set')
-                        break
-                """
-
             print('\t\t\t\tTraining for Task%d done!'%(task))
+
+            # Update the previous task labels
+            prev_task_labels += task_labels[task]
+
             if break_training:
                 break
 
@@ -441,25 +467,54 @@ def train_task_sequence(model, sess, saver, datasets, task_labels, cross_validat
                 print('\t\t\t\tTask updates after Task%d done!'%(task))
 
                 # If importance method is 'GEM' then store the episodic memory for the task
-                if model.imp_method == 'GEM':
+                if model.imp_method == 'GEM' or model.imp_method == 'S-GEM':
                     # Do the uniform sampling/ only get examples from current task
-                    importance_array = np.ones([datasets[task]['train']['images'].shape[0]], dtype=np.float32)
-                    # Get the important samples from the current task
-                    imp_images, imp_labels = sample_from_dataset(datasets[task]['train'], importance_array, 
-                            task_labels[task], samples_per_class)
-                    task_memory = {
-                            'images': deepcopy(imp_images),
-                            'labels': deepcopy(imp_labels),
-                            }
-                    task_based_memory.append(task_memory)
-                    
+                    importance_array = np.ones([task_train_images.shape[0]], dtype=np.float32)
+
+                    if model.imp_method == 'GEM':
+                        # Get the important samples from the current task
+                        imp_images, imp_labels = sample_from_dataset(datasets[task]['train'], importance_array,
+                                task_labels[task], SAMPLES_PER_CLASS)
+                        task_memory = {
+                                'images': deepcopy(imp_images),
+                                'labels': deepcopy(imp_labels),
+                                }
+                        task_based_memory.append(task_memory)
+
+                    elif model.imp_method == 'S-GEM':
+                        data_to_sample_from = {
+                                'images': task_train_images,
+                                'labels': task_train_labels,
+                                }
+                        if HERDING_BASED_SAMPLING:
+                            # Compute the features of training data
+                            features = sess.run(model.features, feed_dict={model.x: task_train_images, model.y_: task_train_labels,
+                            model.keep_prob: 1.0, model.output_mask: logit_mask, model.train_phase: False})
+                            update_episodic_memory(data_to_sample_from, features, episodic_mem_size, task, episodic_images, episodic_labels, task_labels=task_labels[task], is_herding=True)
+                        else:
+                            update_episodic_memory(data_to_sample_from, importance_array, episodic_mem_size, task, episodic_images, episodic_labels)
+
+                        # Inspect episodic memory
+                        if DEBUG_EPISODIC_MEMORY:
+                            # Which labels are present in the memory
+                            unique_labels = np.unique(np.nonzero(episodic_labels)[-1])
+                            print('Unique Labels present in the episodic memory'.format(unique_labels))
+                            print('Labels count:')
+                            for lbl in unique_labels:
+                                print('Label {}: {} samples'.format(lbl, np.where(np.nonzero(episodic_labels)[-1] == lbl)[0].size))
+
+                            # Is there any space which is not filled
+                            print('Empty space: {}'.format(np.where(np.sum(episodic_labels, axis=1) == 0)))
+
+                        print('Episodic memory of {} images at task {} saved!'.format(episodic_images.shape[0], task))
+
                 # If sampling flag is set, store few of the samples from previous task
                 if do_sampling:
                     # Do the uniform sampling/ only get examples from current task
                     importance_array = np.ones([datasets[task]['train']['images'].shape[0]], dtype=np.float32)
                     # Get the important samples from the current task
                     imp_images, imp_labels = sample_from_dataset(datasets[task]['train'], importance_array, 
-                            task_labels[task], samples_per_class)
+                            task_labels[task], SAMPLES_PER_CLASS)
 
                     if imp_images is not None:
                         if last_task_x is None:
@@ -595,11 +650,13 @@ def main():
     datasets = construct_split_awa(task_labels, args.data_dir, AWA_TRAIN_LIST, AWA_VAL_LIST, AWA_TEST_LIST, IMG_HEIGHT, IMG_WIDTH)
 
     if args.cross_validate_mode:
-        models_list = MODELS
-        learning_rate_list = [0.3, 0.1, 0.03, 0.01, 0.003, 0.001]
+        #models_list = MODELS
+        models_list = [args.imp_method]
+        #learning_rate_list = [0.7, 0.3, 0.1, 0.03, 0.01, 0.003, 0.001, 0.0003]
+        learning_rate_list = [0.1, 0.03, 0.01, 0.003]
     else:
         models_list = [args.imp_method]
-        learning_rate_list = [args.learning_rate]
+        #learning_rate_list = [args.learning_rate]
     for imp_method in models_list:
         if imp_method == 'VAN':
             synap_stgth_list = [0]
@@ -620,7 +677,7 @@ def main():
                 #learning_rate_list = [0.001] # => cross-validaed learning rate for SG, VGG
                 synap_stgth_list = [10] # => cross-validated learning rate for SGD, Resnet-18 no pretraining, 5 tasks
                 learning_rate_list = [0.003] # => cross-validated learning rate for SGD, Resnet-18 no pretraining, 5 tasks
-        elif imp_method == 'EWC':
+        elif imp_method == 'EWC' or imp_method == 'M-EWC':
             if args.cross_validate_mode:
                 synap_stgth_list = [0.1, 1, 10, 100, 1000]
             else:
@@ -653,6 +710,16 @@ def main():
                 learning_rate_list = [0.001] # => cross-validaed learning rate for SG, VGG
         elif imp_method == 'GEM':
             synap_stgth_list = [0]
+            if args.cross_validate_mode:
+                pass
+            else:
+                learning_rate_list = [0.0] 
+        elif imp_method == 'S-GEM':
+            synap_stgth_list = [0]
+            if args.cross_validate_mode:
+                pass
+            else:
+                learning_rate_list = [0.01] # => cross-validated learning rate for SGD, Resnet-18, no pre-training 
 
         for synap_stgth in synap_stgth_list:
             for lr in learning_rate_list:

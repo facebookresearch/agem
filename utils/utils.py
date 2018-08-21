@@ -87,6 +87,81 @@ def get_sample_weights(labels, tasks):
 
     return weights
 
+def update_episodic_memory_with_less_data(task_dataset, importance_array, total_mem_size, task, episodic_images, episodic_labels, task_labels=None, is_herding=False):
+    """
+    Update the episodic memory when the task data is less than the memory size
+    Args:
+
+    Returns:
+    """
+    num_examples_in_task = task_dataset['images'].shape[0]
+    # Empty spaces in the episodic memory
+    empty_spaces = np.sum(np.sum(episodic_labels, axis=1) == 0)
+    if empty_spaces >= num_examples_in_task:
+        # Find where the empty spaces are in order
+        empty_indices = np.where(np.sum(episodic_labels, axis=1) == 0)[0]
+        # Store the whole task data in the episodic memory
+        episodic_images[empty_indices[:num_examples_in_task]] = task_dataset['images']
+        episodic_labels[empty_indices[:num_examples_in_task]] = task_dataset['labels']
+    elif empty_spaces == 0:
+        # Compute the amount of space in the episodic memory for the new task
+        space_for_new_task = total_mem_size// (task + 1) # task 0, 1, ...
+        # Get the indices to update in the episodic memory
+        eps_mem_indices = np.random.choice(total_mem_size, space_for_new_task, replace=False) # Sample without replacement
+        # Get the indices of important samples from the task dataset
+        label_importance = importance_array + 1e-32
+        label_importance /= np.sum(label_importance) # Convert to a probability distribution
+        task_mem_indices = np.random.choice(num_examples_in_task, space_for_new_task, p=label_importance, replace=False) # Sample without replacement
+        # Update the episodic memory
+        episodic_images[eps_mem_indices] = task_dataset['images'][task_mem_indices]
+        episodic_labels[eps_mem_indices] = task_dataset['labels'][task_mem_indices]
+    else:
+        # When there is some free space but not enough to store the whole task
+        # Find where the empty spaces are in order
+        empty_indices = np.where(np.sum(episodic_labels, axis=1) == 0)[0]
+        # Store some of the examples from task in the memory
+        episodic_images[empty_indices] = task_dataset['images'][:len(empty_indices)]
+        episodic_labels[empty_indices] = task_dataset['labels'][:len(empty_indices)]
+        # Adjust the remanining samples in the episodic memory
+        space_for_new_task = (total_mem_size // (task + 1))  - len(empty_indices) # task 0, 1, ...
+        # Get the indices to update in the episodic memory
+        eps_mem_indices = np.random.choice((total_mem_size - len(empty_indices)), space_for_new_task, replace=False) # Sample without replacement
+        # Get the indices of important samples from the task dataset
+        label_importance = importance_array[len(empty_indices):] + 1e-32
+        label_importance /= np.sum(label_importance) # Convert to a probability distribution
+        updated_num_examples_in_task = num_examples_in_task - len(empty_indices)
+        task_mem_indices = np.random.choice(updated_num_examples_in_task, space_for_new_task, p=label_importance, replace=False) # Sample without replacement
+        task_mem_indices += len(empty_indices) # Add the offset
+        # Update the episodic memory
+        episodic_images[eps_mem_indices] = task_dataset['images'][task_mem_indices]
+        episodic_labels[eps_mem_indices] = task_dataset['labels'][task_mem_indices]
+
+def update_episodic_memory(task_dataset, importance_array, total_mem_size, task, episodic_images, episodic_labels, task_labels=None, is_herding=False):
+    """
+    Update the episodic memory with new task data
+    Args:
+
+    Reruns:
+    """
+    num_examples_in_task = task_dataset['images'].shape[0]
+    # Compute the amount of space in the episodic memory for the new task
+    space_for_new_task = total_mem_size// (task + 1) # task 0, 1, ...
+    # Get the indices to update in the episodic memory
+    eps_mem_indices = np.random.choice(total_mem_size, space_for_new_task, replace=False) # Sample without replacement
+    if is_herding and task_labels is not None:
+        # Get the samples based on herding
+        imp_images, imp_labels = sample_from_dataset_icarl(task_dataset, importance_array, task_labels, space_for_new_task//len(task_labels))
+        episodic_images[eps_mem_indices[np.arange(imp_images.shape[0])]] = imp_images
+        episodic_labels[eps_mem_indices[np.arange(imp_images.shape[0])]] = imp_labels
+    else:
+        # Get the indices of important samples from the task dataset
+        label_importance = importance_array + 1e-32
+        label_importance /= np.sum(label_importance) # Convert to a probability distribution
+        task_mem_indices = np.random.choice(num_examples_in_task, space_for_new_task, p=label_importance, replace=False) # Sample without replacement
+        # Update the episodic memory
+        episodic_images[eps_mem_indices] = task_dataset['images'][task_mem_indices]
+        episodic_labels[eps_mem_indices] = task_dataset['labels'][task_mem_indices]
+
 def sample_from_dataset(dataset, importance_array, task, samples_count, preds=None):
     """
     Samples from a dataset based on a probability distribution
@@ -192,7 +267,6 @@ def sample_from_dataset_icarl(dataset, features, task, samples_count, preds=None
         global_class_indices = np.column_stack(np.nonzero(dataset['labels']))
         class_indices = np.squeeze(global_class_indices[global_class_indices[:,1] == label][:,np.array([True, False])])
         class_indices = np.sort(class_indices, axis=None)
-        print('Samples in class {}: {}'.format(label, len(class_indices)))
 
         if (preds is not None):
             # Find the indices where prediction match the correct label
@@ -207,7 +281,6 @@ def sample_from_dataset_icarl(dataset, features, task, samples_count, preds=None
         mean_feature = np.mean(features[correct_pred_indices, :], axis=0)
 
         actual_samples_count = min(samples_count, len(correct_pred_indices))
-        print(actual_samples_count)
 
         # If no samples are correctly classified then skip saving the samples
         imp_indices = np.zeros(actual_samples_count, dtype=np.int32)

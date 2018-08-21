@@ -121,6 +121,8 @@ class Model:
         self.normalized_fisher_at_minima_vars = []
         self.weights_delta_old_vars = []
         self.gem_reg_grads = []
+        self.ref_grads = []
+        self.projected_gradients_list = []
 
         if self.class_attr is not None:
             self.loss_and_train_ops_for_attr_vector(x, self.y_)
@@ -195,12 +197,18 @@ class Model:
         # Store the current weights before doing a train step
         self.get_current_weights()
 
-        # Define the training operation here as Pathint ops depend on the train ops
-        self.train_op()
+        # For GEM variants train ops will be defined later
+        if (self.imp_method != 'GEM') and (self.imp_method != 'S-GEM'):
+            # Define the training operation here as Pathint ops depend on the train ops
+            self.train_op()
 
         # Create operations to compute importance depending on the importance methods
         if self.imp_method == 'EWC':
             self.create_fisher_ops()
+        elif self.imp_method == 'M-EWC':
+            self.create_fisher_ops()
+            self.create_pathint_ops()
+            self.combined_fisher_pathint_ops()
         elif self.imp_method == 'PI':
             self.create_pathint_ops()
         elif self.imp_method == 'RWALK':
@@ -210,6 +218,8 @@ class Model:
             self.create_hebbian_ops()
         elif self.imp_method == 'GEM':
             self.create_gem_ops()
+        elif self.imp_method == 'S-GEM':
+            self.create_stochastic_gem_ops()
 
         # Create weight save and store ops
         self.weights_store_ops()
@@ -297,12 +307,17 @@ class Model:
         # Store the current weights before doing a train step
         self.get_current_weights()
 
-        # Define the training operation here as Pathint ops depend on the train ops
-        self.train_op()
+        if (self.imp_method != 'GEM') and (self.imp_method != 'S-GEM'):
+            # Define the training operation here as Pathint ops depend on the train ops
+            self.train_op()
 
         # Create operations to compute importance depending on the importance methods
         if self.imp_method == 'EWC':
             self.create_fisher_ops()
+        elif self.imp_method == 'M-EWC':
+            self.create_fisher_ops()
+            self.create_pathint_ops()
+            self.combined_fisher_pathint_ops()
         elif self.imp_method == 'PI':
             self.create_pathint_ops()
         elif self.imp_method == 'RWALK':
@@ -312,6 +327,8 @@ class Model:
             self.create_hebbian_ops()
         elif self.imp_method == 'GEM':
             self.create_gem_ops()
+        elif self.imp_method == 'S-GEM':
+            self.create_stochastic_gem_ops()
 
         # Create weight save and store ops
         self.weights_store_ops()
@@ -372,6 +389,7 @@ class Model:
             if apply_dropout:
                 h = tf.nn.dropout(h, 1)  # Apply dropout on hidden layers?
 
+        self.features = h
         return create_fc_layer(h, weights[-1], biases[-1], apply_relu=False)
 
     def conv_variables(self, kernel, depth):
@@ -519,6 +537,9 @@ class Model:
         # Apply average pooling
         h = tf.reduce_mean(h, [1, 2])
 
+        # Store the feature mappings
+        self.features = h
+
         if self.class_attr is not None:
             # Return the image features
             return h
@@ -548,9 +569,9 @@ class Model:
 
         Returns:
         """
-        if imp_method == 'VAN' or imp_method == 'GEM':
+        if imp_method == 'VAN' or imp_method == 'GEM' or imp_method == 'S-GEM':
             reg = 0.0
-        elif imp_method == 'EWC':
+        elif imp_method == 'EWC' or imp_method == 'M-EWC':
             reg = tf.add_n([tf.reduce_sum(tf.square(w - w_star) * f) for w, w_star, 
                 f in zip(self.trainable_vars, self.star_vars, self.normalized_fisher_at_minima_vars)])
         elif imp_method == 'PI':
@@ -590,7 +611,7 @@ class Model:
         if self.imp_method == 'VAN':
             # Define a training operation
             self.train = self.opt.apply_gradients(self.reg_gradients_vars)
-        elif self.imp_method != 'GEM': # For GEM the train op will be defined later in the create_gem_ops function
+        else:
             # Get the value of old weights first
             with tf.control_dependencies([self.weights_old_ops_grouped]):
                 # Define a training operation
@@ -635,6 +656,9 @@ class Model:
                 self.hebbian_score_vars.append(tf.Variable(tf.zeros(self.trainable_vars[v].get_shape()), trainable=False))
             elif self.imp_method == 'GEM': 
                 self.gem_reg_grads.append(tf.Variable(tf.zeros(self.trainable_vars[v].get_shape()), trainable=False))
+            elif self.imp_method == 'S-GEM':
+                self.ref_grads.append(tf.Variable(tf.zeros(self.trainable_vars[v].get_shape()), trainable=False))
+                self.projected_gradients_list.append(tf.Variable(tf.zeros(self.trainable_vars[v].get_shape()), trainable=False))
 
         if self.imp_method == 'GEM':
             # Compute the total number of parameters in the network
@@ -812,6 +836,17 @@ class Model:
 
         self.sparsify_fisher = tf.group(*sparsify_fisher_ops)
 
+    def combined_fisher_pathint_ops(self):
+        """
+        Define the operations to refine Fisher information based on parameters convergence
+        Args:
+
+        Returns:
+        """
+        #self.refine_fisher_at_minima = [tf.assign(f, f*(1.0/(s+1e-12))) for f, s in zip(self.fisher_diagonal_at_minima, self.small_omega_vars)]
+        self.refine_fisher_at_minima = [tf.assign(f, f*tf.exp(-100.0*s)) for f, s in zip(self.fisher_diagonal_at_minima, self.small_omega_vars)]
+
+
     def create_hebbian_ops(self):
         """
         Define operations for hebbian measure of importance (MAS)
@@ -858,7 +893,41 @@ class Model:
 
         # Define training operations for the first and the subsequent tasks
         self.train_first_task = self.opt.apply_gradients(self.reg_gradients_vars)
-        self.train_subseq_tasks = self.opt.apply_gradients(zip(self.gem_reg_grads, self.trainable_vars))
+        self.train_subseq_tasks = self.opt.apply_gradients(zip(self.gem_reg_grads, self.trainable_vars)) #TODO: Probably don't want to update the last layer weights of the previous tasks?
+
+    def create_stochastic_gem_ops(self):
+        """
+        Define operations for Stochastic GEM
+        """
+        grads = tf.gradients(self.reg_loss, self.trainable_vars)
+        # Reference gradient on previous tasks
+        self.store_ref_grads = [tf.assign(ref, grad) for ref, grad in zip(self.ref_grads, grads)]
+        flat_ref_grads =  tf.concat([tf.reshape(grad, [-1]) for grad in self.ref_grads], 0)
+        # Grandient on the current task
+        task_grads = tf.concat([tf.reshape(grad, [-1]) for grad in grads], 0)
+        with tf.control_dependencies([task_grads]):
+            dotp = tf.reduce_sum(tf.multiply(task_grads, flat_ref_grads))
+            ref_mag = tf.reduce_sum(tf.multiply(flat_ref_grads, flat_ref_grads))
+            proj = task_grads - ((dotp/ ref_mag) * flat_ref_grads)
+            projected_gradients = tf.cond(tf.greater_equal(dotp, 0), lambda: tf.identity(task_grads), lambda: tf.identity(proj))
+            # Convert the projected gradients into a list
+            offset = 0
+            store_proj_grad_ops = []
+            for v in self.projected_gradients_list:
+                shape = v.get_shape()
+                v_params = 1
+                for dim in shape:
+                    v_params *= dim.value
+                store_proj_grad_ops.append(tf.assign(v, tf.reshape(projected_gradients[offset:offset+v_params], shape)))
+                offset += v_params
+            self.store_proj_grads = tf.group(*store_proj_grad_ops)
+    
+            with tf.control_dependencies([self.store_proj_grads]):
+                self.train_subseq_tasks = self.opt.apply_gradients(zip(self.projected_gradients_list, self.trainable_vars)) #TODO: Probably don't want to update the last layer weights of the previous tasks?
+
+        # Define training operations for the first and the subsequent tasks
+        self.train_first_task = self.opt.apply_gradients(self.reg_gradients_vars)
+
 
 #################################################################################
 #### External APIs of the class. These will be called/ exposed externally #######
@@ -928,6 +997,18 @@ class Model:
             #sess.run(self.clear_attr_embed_reg)
             # Reset the tmp fisher vars
             sess.run(self.reset_tmp_fisher)
+        elif self.imp_method == 'M-EWC':
+            # Get the fisher at the end of a task
+            sess.run(self.get_fisher_at_minima)
+            # Refine Fisher based on the convergence info
+            sess.run(self.refine_fisher_at_minima)
+            # Normalize the fisher
+            sess.run([self.get_max_fisher_vars, self.get_min_fisher_vars])
+            sess.run([self.min_fisher, self.max_fisher, self.normalize_fisher_at_minima])
+            # Reset the tmp fisher vars
+            sess.run(self.reset_tmp_fisher)
+            # Reset the small_omega_vars
+            sess.run(self.reset_small_omega)
         elif self.imp_method == 'PI':
             # Update big omega variables
             sess.run(self.update_big_omega)

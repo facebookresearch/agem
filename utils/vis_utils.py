@@ -3,6 +3,8 @@ Define some utility functions
 """
 import numpy as np
 
+import matplotlib
+matplotlib.use('agg')
 import matplotlib.colors as colors
 import matplotlib.cm as cmx
 import matplotlib.pyplot as plt
