@@ -260,6 +260,7 @@ def sample_from_dataset_icarl(dataset, features, task, samples_count, preds=None
         labels              Important labels
     """
 
+    print('Herding based sampling!')
     #samples_count = min(samples_count, dataset['images'].shape[0])
     count = 0
     # For each label in the task extract the important samples
@@ -307,4 +308,18 @@ def sample_from_dataset_icarl(dataset, features, task, samples_count, preds=None
     if count != 0:
         return images, labels
     else:
-        return None, None   
+        return None, None  
+
+
+def compute_fgt(data):
+    """
+    Given a TxT data matrix, compute average forgetting at T-th task
+    """
+    num_tasks = data.shape[0]
+    T = num_tasks - 1
+    fgt = 0.0
+    for i in range(T):
+        fgt += np.max(data[:T,i]) - data[T, i]
+
+    avg_fgt = fgt/ float(num_tasks - 1)
+    return avg_fgt

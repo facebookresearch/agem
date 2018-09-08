@@ -56,7 +56,7 @@ class Model:
     A class defining the model
     """
 
-    def __init__(self, x_train, y_, num_tasks, opt, imp_method, synap_stgth, fisher_update_after, fisher_ema_decay, network_arch='FC', 
+    def __init__(self, x_train, y_, num_tasks, opt, imp_method, synap_stgth, fisher_update_after, fisher_ema_decay, network_arch='FC-S', 
             is_ATT_DATASET=False, x_test=None, attr=None, hybrid=False):
         """
         Instantiate the model
@@ -66,6 +66,7 @@ class Model:
         self.total_classes = int(self.y_.get_shape()[1])
         self.sample_weights = tf.placeholder(tf.float32, shape=[None])
         self.task_id = tf.placeholder(dtype=tf.int32, shape=())
+        self.store_grad_batches = tf.placeholder(dtype=tf.float32, shape=())
         self.keep_prob = tf.placeholder(dtype=tf.float32, shape=())
         self.train_samples = tf.placeholder(dtype=tf.float32, shape=())
         self.training_iters = tf.placeholder(dtype=tf.float32, shape=())
@@ -139,9 +140,15 @@ class Model:
         Loss and training operations for the training of one-hot vector based classification model
         """
         # Define approproate network
-        if self.network_arch == 'FC':
-            input_feature_dim = int(x.get_shape()[1])
-            layer_dims = [input_feature_dim, 256, 256, self.total_classes]
+        if self.network_arch == 'FC-S':
+            input_dim = int(x.get_shape()[1])
+            layer_dims = [input_dim, 256, 256, self.total_classes]
+            self.fc_variables(layer_dims)
+            logits = self.fc_feedforward(x, self.weights, self.biases)
+
+        elif self.network_arch == 'FC-B':
+            input_dim = int(x.get_shape()[1])
+            layer_dims = [input_dim, 2000, 2000, self.total_classes]
             self.fc_variables(layer_dims)
             logits = self.fc_feedforward(x, self.weights, self.biases)
 
@@ -157,17 +164,18 @@ class Model:
             # VGG-16
             logits = self.vgg_16_conv_feedforward(x)
             
-        elif self.network_arch == 'RESNET':
-            if self.is_ATT_DATASET:
-                # Standard ResNet-18
-                kernels = [7, 3, 3, 3, 3]
-                filters = [64, 64, 128, 256, 512]
-                strides = [2, 0, 2, 2, 2]
-            else:
-                # Same resnet-18 as used in GEM paper
-                kernels = [3, 3, 3, 3, 3]
-                filters = [20, 20, 40, 80, 160]
-                strides = [1, 0, 2, 2, 2]
+        elif self.network_arch == 'RESNET-S':
+            # Same resnet-18 as used in GEM paper
+            kernels = [3, 3, 3, 3, 3]
+            filters = [20, 20, 40, 80, 160]
+            strides = [1, 0, 2, 2, 2]
+            logits = self.resnet18_conv_feedforward(x, kernels, filters, strides)
+
+        elif self.network_arch == 'RESNET-B':
+            # Standard ResNet-18
+            kernels = [7, 3, 3, 3, 3]
+            filters = [64, 64, 128, 256, 512]
+            strides = [2, 0, 2, 2, 2]
             logits = self.resnet18_conv_feedforward(x, kernels, filters, strides)
 
         # Prune the predictions to only include the classes for which
@@ -197,7 +205,7 @@ class Model:
         self.get_current_weights()
 
         # For GEM variants train ops will be defined later
-        if (self.imp_method != 'GEM') and (self.imp_method != 'S-GEM'):
+        if 'GEM' not in self.imp_method:
             # Define the training operation here as Pathint ops depend on the train ops
             self.train_op()
 
@@ -217,7 +225,7 @@ class Model:
             self.create_hebbian_ops()
         elif self.imp_method == 'GEM':
             self.create_gem_ops()
-        elif self.imp_method == 'S-GEM':
+        elif self.imp_method == 'S-GEM' or self.imp_method == 'M-GEM':
             self.create_stochastic_gem_ops()
 
         # Create weight save and store ops
@@ -238,9 +246,15 @@ class Model:
         Loss and training operations for the training of joined embedding model
         """
         # Define approproate network
-        if self.network_arch == 'FC':
-            input_feature_dim = int(x.get_shape()[1])
-            layer_dims = [input_feature_dim, 256, 256, self.total_classes]
+        if self.network_arch == 'FC-S':
+            input_dim = int(x.get_shape()[1])
+            layer_dims = [input_dim, 256, 256, self.total_classes]
+            self.fc_variables(layer_dims)
+            logits = self.fc_feedforward(x, self.weights, self.biases)
+
+        elif self.network_arch == 'FC-B':
+            input_dim = int(x.get_shape()[1])
+            layer_dims = [input_dim, 2000, 2000, self.total_classes]
             self.fc_variables(layer_dims)
             logits = self.fc_feedforward(x, self.weights, self.biases)
 
@@ -256,7 +270,15 @@ class Model:
             # VGG-16
             phi_x = self.vgg_16_conv_feedforward(x)
             
-        elif self.network_arch == 'RESNET':
+        elif self.network_arch == 'RESNET-S':
+            # Standard ResNet-18
+            kernels = [3, 3, 3, 3, 3]
+            filters = [20, 20, 40, 80, 160]
+            strides = [1, 0, 2, 2, 2]
+            # Get the image features
+            phi_x = self.resnet18_conv_feedforward(x, kernels, filters, strides)
+
+        elif self.network_arch == 'RESNET-B':
             # Standard ResNet-18
             kernels = [7, 3, 3, 3, 3]
             filters = [64, 64, 128, 256, 512]
@@ -265,8 +287,7 @@ class Model:
             phi_x = self.resnet18_conv_feedforward(x, kernels, filters, strides)
 
         # Get the attributes embedding
-        image_feature_dim = phi_x.get_shape().as_list()[1]
-        attr_embed = self.get_attribute_embedding(self.class_attr, image_feature_dim) # Does not contain biases yet, Dimension: TOTAL_CLASSES x image_feature_dim
+        attr_embed = self.get_attribute_embedding(self.class_attr) # Does not contain biases yet, Dimension: TOTAL_CLASSES x image_feature_dim
         # Add the biases now
         last_layer_biases = bias_variable([self.total_classes], name='attr_embed_b')
         self.trainable_vars.append(last_layer_biases)
@@ -307,8 +328,7 @@ class Model:
         # Store the current weights before doing a train step
         self.get_current_weights()
 
-        if (self.imp_method != 'GEM') and (self.imp_method != 'S-GEM'):
-            # Define the training operation here as Pathint ops depend on the train ops
+        if 'GEM' not in self.imp_method:
             self.train_op()
 
         # Create operations to compute importance depending on the importance methods
@@ -327,7 +347,7 @@ class Model:
             self.create_hebbian_ops()
         elif self.imp_method == 'GEM':
             self.create_gem_ops()
-        elif self.imp_method == 'S-GEM':
+        elif (self.imp_method == 'S-GEM') or (self.imp_method == 'M-GEM'):
             self.create_stochastic_gem_ops()
 
         # Create weight save and store ops
@@ -389,7 +409,9 @@ class Model:
             if apply_dropout:
                 h = tf.nn.dropout(h, 1)  # Apply dropout on hidden layers?
 
+        # Store image features 
         self.features = h
+        self.image_feature_dim = h.get_shape().as_list()[-1]
         return create_fc_layer(h, weights[-1], biases[-1], apply_relu=False)
 
     def conv_variables(self, kernel, depth):
@@ -453,6 +475,9 @@ class Model:
         # Construct FC layers
         shape = h.get_shape().as_list()
         h = tf.reshape(h, [-1, shape[1] * shape[2] * shape[3]])
+        # Store image features 
+        self.features = h
+        self.image_feature_dim = h.get_shape().as_list()[-1]
 
         return create_fc_layer(h, weights[-1], biases[-1], apply_relu=False)
 
@@ -495,6 +520,9 @@ class Model:
         h = vgg_fc_layer(h, 4096, self.trainable_vars, apply_relu=True, name='fc6')
         # fc7
         h = vgg_fc_layer(h, 4096, self.trainable_vars, apply_relu=True, name='fc7')
+        # Store image features 
+        self.features = h
+        self.image_feature_dim = h.get_shape().as_list()[-1]
         # fc8
         if self.class_attr is not None:
             # Return the image features
@@ -539,6 +567,7 @@ class Model:
 
         # Store the feature mappings
         self.features = h
+        self.image_feature_dim = h.get_shape().as_list()[-1]
 
         if self.class_attr is not None:
             # Return the image features
@@ -548,14 +577,14 @@ class Model:
             return logits
 
 
-    def get_attribute_embedding(self, attr, image_feature_dim):
+    def get_attribute_embedding(self, attr):
         """
         Get attribute embedding using a simple FC network
 
         Returns:
             Embedding vector of k x ATTR_DIMS 
         """
-        w = weight_variable([self.attr_dims, image_feature_dim], name='attr_embed_w')
+        w = weight_variable([self.attr_dims, self.image_feature_dim], name='attr_embed_w')
         self.trainable_vars.append(w)
         # Return the inner product of attribute matrix and weight vector. 
         return tf.matmul(attr, w) # Dimension should be TOTAL_CLASSES x image_feature_dim
@@ -568,8 +597,9 @@ class Model:
 
         Returns:
         """
-        if imp_method == 'VAN' or imp_method == 'GEM' or imp_method == 'S-GEM':
-            reg = 0.0
+        reg = 0.0
+        if imp_method == 'VAN' or 'GEM' in imp_method:
+            pass
         elif imp_method == 'EWC' or imp_method == 'M-EWC':
             reg = tf.add_n([tf.reduce_sum(tf.square(w - w_star) * f) for w, w_star, 
                 f in zip(self.trainable_vars, self.star_vars, self.normalized_fisher_at_minima_vars)])
@@ -630,7 +660,7 @@ class Model:
             self.weights_old.append(tf.Variable(tf.zeros(self.trainable_vars[v].get_shape()), trainable=False))
             self.weights_delta_old_vars.append(tf.Variable(tf.zeros(self.trainable_vars[v].get_shape()), trainable=False))
             self.star_vars.append(tf.Variable(tf.zeros(self.trainable_vars[v].get_shape()), trainable=False, 
-                                              name=self.trainable_vars[v].name.rsplit(':')[0]+'_star'))
+                                                  name=self.trainable_vars[v].name.rsplit(':')[0]+'_star'))
 
             # List of variables for pathint method
             self.small_omega_vars.append(tf.Variable(tf.zeros(self.trainable_vars[v].get_shape()), trainable=False))
@@ -640,6 +670,7 @@ class Model:
             # List of variables to store fisher information
             self.fisher_diagonal_at_minima.append(tf.Variable(tf.zeros(self.trainable_vars[v].get_shape()), trainable=False))
 
+            self.normalized_fisher_at_minima_vars.append(tf.Variable(tf.zeros(self.trainable_vars[v].get_shape()), trainable=False, dtype=tf.float32))
             self.tmp_fisher_vars.append(tf.Variable(tf.zeros(self.trainable_vars[v].get_shape()), trainable=False))
             self.running_fisher_vars.append(tf.Variable(tf.zeros(self.trainable_vars[v].get_shape()), trainable=False))
             self.score_vars.append(tf.Variable(tf.zeros(self.trainable_vars[v].get_shape()), trainable=False))
@@ -649,13 +680,12 @@ class Model:
             self.max_score_vars.append(tf.Variable(tf.zeros(1), dtype=tf.float32, trainable=False))
             self.min_score_vars.append(tf.Variable(tf.zeros(1), dtype=tf.float32, trainable=False))
             self.normalized_score_vars.append(tf.Variable(tf.zeros(self.trainable_vars[v].get_shape()), trainable=False))
-            self.normalized_fisher_at_minima_vars.append(tf.Variable(tf.zeros(self.trainable_vars[v].get_shape()), trainable=False, dtype=tf.float32))
             if self.imp_method == 'MAS':
                 # List of variables to store hebbian information
                 self.hebbian_score_vars.append(tf.Variable(tf.zeros(self.trainable_vars[v].get_shape()), trainable=False))
             elif self.imp_method == 'GEM': 
                 self.projected_gradients_list.append(tf.Variable(tf.zeros(self.trainable_vars[v].get_shape()), trainable=False))
-            elif self.imp_method == 'S-GEM':
+            elif self.imp_method == 'S-GEM' or self.imp_method == 'M-GEM':
                 self.ref_grads.append(tf.Variable(tf.zeros(self.trainable_vars[v].get_shape()), trainable=False))
                 self.projected_gradients_list.append(tf.Variable(tf.zeros(self.trainable_vars[v].get_shape()), trainable=False))
 
@@ -901,9 +931,15 @@ class Model:
         """
         Define operations for Stochastic GEM
         """
-        grads = tf.gradients(self.reg_loss, self.trainable_vars)
+        grads = tf.gradients(self.unweighted_entropy, self.trainable_vars)
         # Reference gradient for previous tasks
         self.store_ref_grads = [tf.assign(ref, grad) for ref, grad in zip(self.ref_grads, grads)]
+        # TODO: Comment the line above and uncomment the lines below if want to use an average gradient over the whole episodic memory for AWA and CUB! To Slow!!
+        """
+        self.store_ref_grads = [tf.assign_add(ref, grad) for ref, grad in zip(self.ref_grads, grads)]
+        self.average_ref_grads = [tf.assign(grad, grad*(1.0/ self.store_grad_batches)) for grad in self.ref_grads]
+        self.reset_ref_grads = [tf.assign(grad, tf.zeros_like(grad)) for grad in self.ref_grads]
+        """
         flat_ref_grads =  tf.concat([tf.reshape(grad, [-1]) for grad in self.ref_grads], 0)
         # Grandient on the current task
         task_grads = tf.concat([tf.reshape(grad, [-1]) for grad in grads], 0)
