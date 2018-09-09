@@ -49,7 +49,7 @@ IMG_HEIGHT = 224
 IMG_WIDTH = 224
 IMG_CHANNELS = 3
 TOTAL_CLASSES = 200          # Total number of classes in the dataset 
-EPS_MEM_BATCH_SIZE = 32
+EPS_MEM_BATCH_SIZE = 128
 DEBUG_EPISODIC_MEMORY = False
 KEEP_EPISODIC_MEMORY_FULL = False
 K_FOR_CROSS_VAL = 3
@@ -763,31 +763,31 @@ def main():
             if args.online_cross_val:
                 pass
             else:
-                learning_rate_list = [args.learning_rate]
+                learning_rate_list = [0.03]
         elif imp_method == 'PI':
             if args.online_cross_val:
                 synap_stgth_list = [0.1, 1, 10]
             else:
-                synap_stgth_list = [args.synap_stgth]
-                learning_rate_list = [args.learning_rate]
+                synap_stgth_list = [0.1]
+                learning_rate_list = [0.03]
         elif imp_method == 'EWC' or imp_method == 'M-EWC':
             if args.online_cross_val:
                 synap_stgth_list = [0.1, 1, 10, 100]
             else:
-                synap_stgth_list = [args.synap_stgth]
-                learning_rate_list = [args.learning_rate]
+                synap_stgth_list = [10]
+                learning_rate_list = [0.03]
         elif imp_method == 'MAS':
             if args.online_cross_val:
                 synap_stgth_list = [0.1, 1, 10, 100]
             else:
-                synap_stgth_list = [args.synap_stgth]
-                learning_rate_list = [args.learning_rate]
+                synap_stgth_list = [0.1]
+                learning_rate_list = [0.03]
         elif imp_method == 'RWALK':
             if args.online_cross_val:
                 synap_stgth_list = [0.1, 1, 10, 100]
             else:
-                synap_stgth_list = [args.synap_stgth]
-                learning_rate_list = [args.learning_rate]
+                synap_stgth_list = [1]
+                learning_rate_list = [0.03]
         elif imp_method == 'GEM':
             synap_stgth_list = [0]
             if args.online_cross_val:
@@ -805,7 +805,7 @@ def main():
             if args.online_cross_val:
                 pass
             else:
-                learning_rate_list = [args.learning_rate]
+                learning_rate_list = [0.03]
 
         for synap_stgth in synap_stgth_list:
             for lr in learning_rate_list:
