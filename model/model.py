@@ -1011,7 +1011,7 @@ class Model:
         # big_omegas reliably
         sess.run(self.set_star_vars)
 
-    def task_updates(self, sess, task, train_x, train_labels, num_classes_per_task=10, class_attr=None):
+    def task_updates(self, sess, task, train_x, train_labels, num_classes_per_task=10, class_attr=None, online_cross_val=False):
         """
         Updates different variables when a task is completed
         Args:
@@ -1090,7 +1090,10 @@ class Model:
             if self.class_attr is not None:
                 # Define mask based on the class attributes
                 masked_class_attrs = np.zeros_like(class_attr)
-                attr_offset = task * num_classes_per_task
+                if online_cross_val:
+                    attr_offset = task * num_classes_per_task
+                else:
+                    attr_offset = (task + 3) * num_classes_per_task #TODO: Fix this hard-coded 3. Read from K_FOR_CROSS_VAL instead
                 masked_class_attrs[attr_offset:attr_offset+num_classes_per_task] = class_attr[attr_offset:attr_offset+num_classes_per_task]
             # Logits mask
             logit_mask = np.zeros(self.total_classes)

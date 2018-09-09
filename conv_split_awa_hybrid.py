@@ -319,7 +319,10 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, num_classes_pe
             else:
                 # Attribute mask
                 masked_class_attrs = np.zeros_like(class_attr)
-                attr_offset = task * num_classes_per_task
+                if online_cross_val:
+                    attr_offset = task * num_classes_per_task
+                else:
+                    attr_offset = (task + K_FOR_CROSS_VAL) * num_classes_per_task
                 masked_class_attrs[attr_offset:attr_offset+num_classes_per_task] = class_attr[attr_offset:attr_offset+num_classes_per_task]
 
             # Number of iterations after which convergence is checked
@@ -399,7 +402,11 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, num_classes_pe
                             logit_mask[:] = 0
                             logit_mask[task_labels[prev_task]] = 1.0
                             prev_class_attrs = np.zeros_like(class_attr)
-                            attr_offset = prev_task * num_classes_per_task
+                            if online_cross_val:
+                                attr_offset = prev_task * num_classes_per_task
+                            else:
+                                attr_offset = (prev_task + K_FOR_CROSS_VAL) * num_classes_per_task
+
                             prev_class_attrs[attr_offset:attr_offset+num_classes_per_task] = class_attr[attr_offset:attr_offset+num_classes_per_task]
                             sess.run(model.store_ref_grads, feed_dict={model.x: task_based_memory[prev_task]['images'],
                                 model.class_attr: prev_class_attrs,
@@ -427,7 +434,10 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, num_classes_pe
                         logit_mask[:] = 0
                         logit_mask[task_labels[prev_task]] = 1.0
                         prev_class_attrs = np.zeros_like(class_attr)
-                        attr_offset = prev_task * num_classes_per_task
+                        if online_cross_val:
+                            attr_offset = prev_task * num_classes_per_task
+                        else:
+                            attr_offset = (prev_task + K_FOR_CROSS_VAL) * num_classes_per_task
                         prev_class_attrs[attr_offset:attr_offset+num_classes_per_task] = class_attr[attr_offset:attr_offset+num_classes_per_task]
                         # Store the reference gradient
                         sess.run(model.store_ref_grads, feed_dict={model.x: task_based_memory[prev_task]['images'], model.y_: task_based_memory[prev_task]['labels'],
@@ -504,8 +514,12 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, num_classes_pe
                 # Update the previous task labels
                 prev_task_labels += task_labels[task]
                 prev_class_attrs = np.zeros_like(class_attr)
-                prev_attr_offset = (task + 1) * num_classes_per_task
-                prev_class_attrs[:prev_attr_offset] = class_attr[:prev_attr_offset]
+                if online_cross_val:
+                    prev_attr_offset = (task + 1) * num_classes_per_task
+                    prev_class_attrs[:prev_attr_offset] = class_attr[:prev_attr_offset]
+                else:
+                    prev_attr_offset = (task + 1 + K_FOR_CROSS_VAL) * num_classes_per_task
+                    prev_class_attrs[(K_FOR_CROSS_VAL*num_classes_per_task):prev_attr_offset] = class_attr[(K_FOR_CROSS_VAL*num_classes_per_task):prev_attr_offset]
 
             if break_training:
                 break
@@ -514,7 +528,7 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, num_classes_pe
             # Don't calculate the task updates for the last task
             if task < len(datasets) - 1:
                 # TODO: For MAS, should the gradients be for current task or all the previous tasks
-                model.task_updates(sess, task, task_train_images, task_labels[task], num_classes_per_task=num_classes_per_task, class_attr=class_attr) 
+                model.task_updates(sess, task, task_train_images, task_labels[task], num_classes_per_task=num_classes_per_task, class_attr=class_attr, online_cross_val=online_cross_val) 
                 print('\t\t\t\tTask updates after Task%d done!'%(task))
 
                 # If importance method is '*-GEM' then store the episodic memory for the task
@@ -655,13 +669,13 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, num_classes_pe
         runs = np.array(runs)
         return runs
 
-def test_task_sequence(model, sess, test_data, class_attr, num_classes_per_task, test_tasks, cross_validate_mode, eval_single_head=True, test_labels=None):
+def test_task_sequence(model, sess, test_data, class_attr, num_classes_per_task, test_tasks, online_cross_val, eval_single_head=True, test_labels=None):
     """
     Snapshot the current performance
     """
     list_acc = []
 
-    if cross_validate_mode:
+    if online_cross_val:
         test_set = 'validation'
     else:
         test_set = 'test'
@@ -679,7 +693,10 @@ def test_task_sequence(model, sess, test_data, class_attr, num_classes_per_task,
             logit_mask[:] = 0
             logit_mask[labels] = 1.0
             masked_class_attrs = np.zeros_like(class_attr)
-            attr_offset = task * num_classes_per_task
+            if online_cross_val:
+                attr_offset = task * num_classes_per_task
+            else:
+                attr_offset = (task + K_FOR_CROSS_VAL) * num_classes_per_task
             masked_class_attrs[attr_offset:attr_offset+num_classes_per_task] = class_attr[attr_offset:attr_offset+num_classes_per_task]
     
         task_test_images = test_data[task][test_set]['images']
@@ -756,10 +773,10 @@ def main():
     # Load the split AWA dataset
     datasets, AWA_attr = construct_split_awa(task_labels, args.data_dir, AWA_TRAIN_LIST, AWA_VAL_LIST, AWA_TEST_LIST, IMG_HEIGHT, IMG_WIDTH, attr_file=AWA_ATTR_LIST)
     if args.online_cross_val:
-        sub_AWA_attr = AWA_attr[:K*classes_per_task]
+        AWA_attr[K_FOR_CROSS_VAL*classes_per_task:] = 0
     else:
-        sub_AWA_attr = AWA_attr[K*classes_per_task:]
-    print('Attributes dimension: {}'.format(sub_AWA_attr.shape))
+        AWA_attr[:K_FOR_CROSS_VAL*classes_per_task] = 0
+    print('Attributes: {}'.format(np.sum(AWA_attr, axis=1)))
 
     if args.cross_validate_mode:
         models_list = MODELS
@@ -855,7 +872,7 @@ def main():
                     # Define Input and Output of the model
                     x = tf.placeholder(tf.float32, shape=[None, IMG_HEIGHT, IMG_WIDTH, IMG_CHANNELS])
                     y_ = tf.placeholder(tf.float32, shape=[None, TOTAL_CLASSES])
-                    attr = tf.placeholder(tf.float32, shape=[sub_AWA_attr.shape[0], ATTR_DIMS])
+                    attr = tf.placeholder(tf.float32, shape=[TOTAL_CLASSES, ATTR_DIMS])
 
                     if not args.train_single_epoch:
                         # Define ops for data augmentation
@@ -889,9 +906,9 @@ def main():
 
                     with tf.Session(config=config, graph=graph) as sess:
                         saver = tf.train.Saver(var_list=tf.global_variables(), max_to_keep=100)
-                        runs = train_task_sequence(model, sess, saver, datasets, sub_AWA_attr, classes_per_task, task_labels, args.cross_validate_mode, 
+                        runs = train_task_sequence(model, sess, saver, datasets, AWA_attr, classes_per_task, task_labels, args.cross_validate_mode, 
                                 args.train_single_epoch, args.eval_single_head, args.do_sampling, args.is_herding, args.mem_size*total_classes, args.train_iters, 
-                                args.batch_size, args.num_runs, args.init_checkpoint)
+                                args.batch_size, args.num_runs, args.init_checkpoint, args.online_cross_val)
                         # Close the session
                         sess.close()
 
