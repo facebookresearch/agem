@@ -7,6 +7,7 @@ import argparse
 import os
 import sys
 import math
+import time
 
 import datetime
 import numpy as np
@@ -712,11 +713,14 @@ def main():
         config = tf.ConfigProto()
         config.gpu_options.allow_growth = True
 
+        time_start = time.time()
         with tf.Session(config=config, graph=graph) as sess:
             runs = train_task_sequence(model, sess, datasets, task_labels, args.cross_validate_mode, args.train_single_epoch, args.eval_single_head, 
                     args.do_sampling, args.is_herding, args.mem_size*total_classes, args.train_iters, args.batch_size, args.num_runs, args.online_cross_val)
             # Close the session
             sess.close()
+        time_end = time.time()
+        time_spent = time_end - time_start
 
     # Compute the mean and std
     acc_mean = runs.mean(0)
@@ -729,7 +733,11 @@ def main():
     if args.cross_validate_mode:
         cross_validate_dump_file = args.log_dir + '/' + 'SPLIT_CIFAR_%s_%s'%(args.imp_method, args.optim) + '.txt'
         with open(cross_validate_dump_file, 'a') as f:
-            f.write('HERDING: {} \t ARCH: {} \t LR:{} \t LAMBDA: {} \t ACC: {} \t Fgt: {}\n'.format(args.is_herding, args.arch, args.learning_rate, args.synap_stgth, acc_mean[-1,:].mean(), compute_fgt(acc_mean)))
+            if MULTI_TASK:
+                f.write('HERDING: {} \t ARCH: {} \t LR:{} \t LAMBDA: {} \t ACC: {}\n'.format(args.is_herding, args.arch, args.learning_rate, args.synap_stgth, acc_mean[-1,:].mean()))
+            else:
+                f.write('HERDING: {} \t ARCH: {} \t LR:{} \t LAMBDA: {} \t ACC: {} \t Fgt: {} \t Time: {}\n'.format(args.is_herding, args.arch, args.learning_rate, 
+                    args.synap_stgth, acc_mean[-1,:].mean(), compute_fgt(acc_mean), str(time_spent)))
 
     # Store the experiment output to a file
     snapshot_experiment_eval(args.log_dir, experiment_id, exper_acc)

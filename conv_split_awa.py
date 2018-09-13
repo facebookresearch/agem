@@ -750,43 +750,43 @@ def main():
 
     if args.cross_validate_mode:
         models_list = MODELS
-        learning_rate_list = [0.1, 0.03, 0.01, 0.003, 0.001]
+        learning_rate_list = [0.1, 0.03, 0.01, 0.003, 0.0003]
     else:
         models_list = MODELS
     for imp_method in models_list:
         if imp_method == 'VAN':
             synap_stgth_list = [0]
-            if args.online_cross_val:
+            if args.online_cross_val or args.cross_validate_mode:
                 pass
             else:
                 learning_rate_list = [0.001]
         elif imp_method == 'PI':
-            if args.online_cross_val:
+            if args.online_cross_val or args.cross_validate_mode:
                 synap_stgth_list = [0.1, 1, 10]
             else:
                 synap_stgth_list = [1]
                 learning_rate_list = [0.003]
         elif imp_method == 'EWC' or imp_method == 'M-EWC':
-            if args.online_cross_val:
+            if args.online_cross_val or args.cross_validate_mode:
                 synap_stgth_list = [0.1, 1, 10, 100]
             else:
                 synap_stgth_list = [100]
                 learning_rate_list = [0.003]
         elif imp_method == 'MAS':
-            if args.online_cross_val:
+            if args.online_cross_val or args.cross_validate_mode:
                 synap_stgth_list = [0.1, 1, 10, 100]
             else:
                 synap_stgth_list = [1] 
                 learning_rate_list = [0.003]
         elif imp_method == 'RWALK':
-            if args.online_cross_val:
+            if args.online_cross_val or args.cross_validate_mode:
                 synap_stgth_list = [0.1, 1, 10, 100]
             else:
                 synap_stgth_list = [10]  # Run again
                 learning_rate_list = [0.003]
         elif imp_method == 'GEM':
             synap_stgth_list = [0]
-            if args.online_cross_val:
+            if args.online_cross_val or args.cross_validate_mode:
                 pass
             else:
                 learning_rate_list = [args.learning_rate] 
@@ -798,7 +798,7 @@ def main():
                 learning_rate_list = [args.learning_rate] 
         elif imp_method == 'S-GEM':
             synap_stgth_list = [0]
-            if args.online_cross_val:
+            if args.online_cross_val or args.cross_validate_mode:
                 pass
             else:
                 learning_rate_list = [0.01] 
