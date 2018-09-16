@@ -39,7 +39,7 @@ VALID_ARCHS = ['CNN', 'RESNET-S', 'RESNET-B', 'VGG']
 ARCH = 'RESNET-S'
 
 ## Model options
-MODELS = ['VAN', 'PI', 'EWC', 'MAS', 'GEM', 'RWALK', 'M-EWC', 'M-GEM', 'S-GEM'] #List of valid models 
+MODELS = ['VAN', 'PI', 'EWC', 'MAS', 'GEM', 'RWALK', 'M-EWC', 'M-GEM', 'S-GEM', 'FTR_EXT'] #List of valid models 
 IMP_METHOD = 'EWC'
 SYNAP_STGTH = 75000
 FISHER_EMA_DECAY = 0.9          # Exponential moving average decay factor for Fisher computation (online Fisher)
@@ -55,6 +55,8 @@ EPS_MEM_BATCH_SIZE = 1280
 KEEP_EPISODIC_MEMORY_FULL = False
 DEBUG_EPISODIC_MEMORY = False
 K_FOR_CROSS_VAL = 3
+TIME_MY_METHOD = False
+COUNT_VIOLATONS = False
 
 ## Logging, saving and testing options
 LOG_DIR = './split_cifar_results'
@@ -189,6 +191,9 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
 
         # Mask for softmax 
         logit_mask = np.zeros(TOTAL_CLASSES)
+        if COUNT_VIOLATONS:
+            violation_count = np.zeros(model.num_tasks)
+            vc = 0
 
         # Training loop for all the tasks
         for task in range(len(datasets)):
@@ -312,6 +317,13 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
                     feed_dict[model.output_mask] = logit_mask
                     _, loss = sess.run([model.train, model.reg_loss], feed_dict=feed_dict)
 
+                elif model.imp_method == 'FTR_EXT':
+                    feed_dict[model.output_mask] = logit_mask
+                    if task == 0:
+                        _, loss = sess.run([model.train, model.reg_loss], feed_dict=feed_dict)
+                    else:
+                        _, loss = sess.run([model.train_classifier, model.reg_loss], feed_dict=feed_dict)
+
                 elif model.imp_method == 'EWC' or model.imp_method == 'M-EWC':
                     feed_dict[model.output_mask] = logit_mask
                     # If first iteration of the first task then set the initial value of the running fisher
@@ -410,7 +422,10 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
                         logit_mask[:] = 0
                         logit_mask[task_labels[task]] = 1.0
                         feed_dict[model.output_mask] = logit_mask
-                        _, loss = sess.run([model.train_subseq_tasks, model.reg_loss], feed_dict=feed_dict)
+                        if COUNT_VIOLATONS:
+                            vc, _, loss = sess.run([model.violation_count, model.train_subseq_tasks, model.reg_loss], feed_dict=feed_dict)
+                        else:
+                            _, loss = sess.run([model.train_subseq_tasks, model.reg_loss], feed_dict=feed_dict)
 
                 elif model.imp_method == 'RWALK':
                     feed_dict[model.output_mask] = logit_mask
@@ -443,6 +458,11 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
             print('\t\t\t\tTraining for Task%d done!'%(task))
 
             if model.imp_method == 'S-GEM':
+                if COUNT_VIOLATONS:
+                    violation_count[task] = vc
+                    print('Task {}: Violation Count: {}'.format(task, violation_count))
+                    sess.run(model.reset_violation_count, feed_dict=feed_dict)
+
                 # Update the previous task labels
                 prev_task_labels += task_labels[task]
 
@@ -585,6 +605,10 @@ def test_task_sequence(model, sess, test_data, test_tasks, cross_validate_mode, 
     """
     Snapshot the current performance
     """
+    if TIME_MY_METHOD:
+        # Only compute the training time
+        return np.zeros(model.num_tasks)
+
     list_acc = []
 
     if cross_validate_mode:

@@ -39,7 +39,7 @@ VALID_ARCHS = ['FC-S', 'FC-B']
 ARCH = 'FC-S'
 
 ## Model options
-MODELS = ['VAN', 'PI', 'EWC', 'MAS', 'GEM', 'RWALK', 'S-GEM', 'M-GEM'] #List of valid models 
+MODELS = ['VAN', 'PI', 'EWC', 'MAS', 'GEM', 'RWALK', 'S-GEM', 'M-GEM','FTR_EXT'] #List of valid models 
 IMP_METHOD = 'EWC'
 SYNAP_STGTH = 75000
 FISHER_EMA_DECAY = 0.9      # Exponential moving average decay factor for Fisher computation (online Fisher)
@@ -55,6 +55,8 @@ KEEP_EPISODIC_MEMORY_FULL = False
 DEBUG_EPISODIC_MEMORY = False
 USE_GPU = True
 K_FOR_CROSS_VAL = 3
+TIME_MY_METHOD = False
+COUNT_VIOLATIONS = False
 
 ## Logging, saving and testing options
 LOG_DIR = './permute_mnist_results'
@@ -157,6 +159,9 @@ def train_task_sequence(model, sess, datasets, cross_validate_mode, train_single
         # Mask for softmax
         # Since all the classes are present in all the tasks so nothing to mask
         logit_mask = np.ones(TOTAL_CLASSES)
+        if COUNT_VIOLATIONS:
+            violation_count = np.zeros(model.num_tasks)
+            vc = 0
 
         # Training loop for all the tasks
         for task in range(len(datasets)):
@@ -233,6 +238,12 @@ def train_task_sequence(model, sess, datasets, cross_validate_mode, train_single
                 if model.imp_method == 'VAN':
                     _, loss = sess.run([model.train, model.reg_loss], feed_dict=feed_dict)
 
+                elif model.imp_method == 'FTR_EXT':
+                    if task == 0:
+                        _, loss = sess.run([model.train, model.reg_loss], feed_dict=feed_dict)
+                    else:
+                        _, loss = sess.run([model.train_classifier, model.reg_loss], feed_dict=feed_dict)
+
                 elif model.imp_method == 'EWC':
                     # If first iteration of the first task then set the initial value of the running fisher
                     if task == 0 and iters == 0:
@@ -297,8 +308,11 @@ def train_task_sequence(model, sess, datasets, cross_validate_mode, train_single
                         # Store the reference gradient
                         sess.run(model.store_ref_grads, feed_dict={model.x: episodic_images[mem_sample_mask], model.y_: episodic_labels[mem_sample_mask],
                             model.keep_prob: 1.0, model.output_mask: logit_mask, model.train_phase: True})
-                        # Compute the gradient for current task and project if need be
-                        _, loss = sess.run([model.train_subseq_tasks, model.reg_loss], feed_dict=feed_dict)
+                        if COUNT_VIOLATIONS:
+                            vc, _, loss = sess.run([model.violation_count, model.train_subseq_tasks, model.reg_loss], feed_dict=feed_dict)
+                        else:
+                            # Compute the gradient for current task and project if need be
+                            _, loss = sess.run([model.train_subseq_tasks, model.reg_loss], feed_dict=feed_dict)
 
                 elif model.imp_method == 'RWALK':
                     # If first iteration of the first task then set the initial value of the running fisher
@@ -328,6 +342,11 @@ def train_task_sequence(model, sess, datasets, cross_validate_mode, train_single
                     sys.exit(0)
 
             print('\t\t\t\tTraining for Task%d done!'%(task))
+
+            if model.imp_method == 'S-GEM' and COUNT_VIOLATIONS:
+                violation_count[task] = vc
+                print('Task {}: Violation Count: {}'.format(task, violation_count))
+                sess.run(model.reset_violation_count, feed_dict=feed_dict)
 
             # Compute the inter-task updates, Fisher/ importance scores etc
             # Don't calculate the task updates for the last task
@@ -431,6 +450,10 @@ def test_task_sequence(model, sess, test_data, cross_validate_mode, eval_single_
     """
     Snapshot the current performance
     """
+    if TIME_MY_METHOD:
+        # Only compute the training time
+        return np.zeros(model.num_tasks)
+
     list_acc = []
     logit_mask = np.ones(TOTAL_CLASSES)
     if cross_validate_mode:

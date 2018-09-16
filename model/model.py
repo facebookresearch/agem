@@ -73,6 +73,7 @@ class Model:
         self.train_step = tf.placeholder(dtype=tf.float32, shape=())
         self.train_phase = tf.placeholder(tf.bool, name='train_phase')
         self.output_mask = tf.placeholder(dtype=tf.float32, shape=[self.total_classes])
+        self.violation_count = tf.Variable(0, dtype=tf.float32, trainable=False)
         self.is_ATT_DATASET = is_ATT_DATASET # To use a different (standard one) ResNet-18 for CUB
         if x_test is not None:
             # If CUB datatset then use augmented x (x_train) for training and non-augmented x (x_test) for testing
@@ -640,6 +641,10 @@ class Model:
         if self.imp_method == 'VAN':
             # Define a training operation
             self.train = self.opt.apply_gradients(self.reg_gradients_vars)
+        elif self.imp_method == 'FTR_EXT':
+            # Define a training operation for the first and subsequent tasks
+            self.train = self.opt.apply_gradients(self.reg_gradients_vars)
+            self.train_classifier = self.opt.apply_gradients(self.reg_gradients_vars[-2:])
         else:
             # Get the value of old weights first
             with tf.control_dependencies([self.weights_old_ops_grouped]):
@@ -947,6 +952,11 @@ class Model:
             dotp = tf.reduce_sum(tf.multiply(task_grads, flat_ref_grads))
             ref_mag = tf.reduce_sum(tf.multiply(flat_ref_grads, flat_ref_grads))
             proj = task_grads - ((dotp/ ref_mag) * flat_ref_grads)
+            self.reset_violation_count = self.violation_count.assign(0)
+            def increment_violation_count():
+                with tf.control_dependencies([tf.assign_add(self.violation_count, 1)]):
+                    return tf.identity(self.violation_count)
+            self.violation_count = tf.cond(tf.greater_equal(dotp, 0), lambda: tf.identity(self.violation_count), increment_violation_count)
             projected_gradients = tf.cond(tf.greater_equal(dotp, 0), lambda: tf.identity(task_grads), lambda: tf.identity(proj))
             # Convert the flat projected gradient vector into a list
             offset = 0
