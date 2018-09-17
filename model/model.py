@@ -63,7 +63,10 @@ class Model:
         """
         # Define some placeholders which are used to feed the data to the model
         self.y_ = y_
-        self.total_classes = int(self.y_.get_shape()[1])
+        if imp_method == 'PNN':
+            self.total_classes = int(self.y_[0].get_shape()[1])
+        else:
+            self.total_classes = int(self.y_.get_shape()[1])
         self.sample_weights = tf.placeholder(tf.float32, shape=[None])
         self.task_id = tf.placeholder(dtype=tf.int32, shape=())
         self.store_grad_batches = tf.placeholder(dtype=tf.float32, shape=())
@@ -144,8 +147,19 @@ class Model:
         if self.network_arch == 'FC-S':
             input_dim = int(x.get_shape()[1])
             layer_dims = [input_dim, 256, 256, self.total_classes]
-            self.fc_variables(layer_dims)
-            logits = self.fc_feedforward(x, self.weights, self.biases)
+            if self.imp_method == 'PNN':
+                task_logits = []
+                self.unweighted_entropy = []
+                for i in range(self.num_tasks):
+                    if i == 0:
+                        task_logits.append(self.init_column_progNN(layer_dims, x))
+                        self.unweighted_entropy.append(tf.squeeze(tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=y_[i], logits=task_logits[i])))) # mult by mean(y_[i]) puts unwaranted loss to 0
+                    else:
+                        task_logits.append(self.extensible_column_progNN(layer_dims, x, i))
+                        self.unweighted_entropy.append(tf.squeeze(tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=y_[i], logits=task_logits[i])))) # mult by mean(y_[i]) puts unwaranted loss to 0
+            else:
+                self.fc_variables(layer_dims)
+                logits = self.fc_feedforward(x, self.weights, self.biases)
 
         elif self.network_arch == 'FC-B':
             input_dim = int(x.get_shape()[1])
@@ -181,8 +195,9 @@ class Model:
 
         # Prune the predictions to only include the classes for which
         # the training data is present
-        self.pruned_logits = tf.where(tf.tile(tf.equal(self.output_mask[None,:], 1.0), 
-            [tf.shape(logits)[0], 1]), logits, NEG_INF*tf.ones_like(logits))
+        if self.imp_method != 'PNN':
+            self.pruned_logits = tf.where(tf.tile(tf.equal(self.output_mask[None,:], 1.0), 
+                [tf.shape(logits)[0], 1]), logits, NEG_INF*tf.ones_like(logits))
 
         # Create list of variables for storing different measures
         # Note: This method has to be called before calculating fisher 
@@ -190,20 +205,19 @@ class Model:
         self.init_vars()
 
         # Different entropy measures/ loss definitions
-        self.mse = 2.0*tf.nn.l2_loss(self.pruned_logits) # tf.nn.l2_loss computes sum(T**2)/ 2
-        self.weighted_entropy = tf.reduce_mean(tf.losses.softmax_cross_entropy(y_, 
-            self.pruned_logits, self.sample_weights, reduction=tf.losses.Reduction.NONE))
-        self.unweighted_entropy = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=y_, 
-            logits=self.pruned_logits))
-        # TODO
-        #self.unweighted_entropy = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(labels=y_, 
-        #    logits=self.pruned_logits))
+        if self.imp_method != 'PNN':
+            self.mse = 2.0*tf.nn.l2_loss(self.pruned_logits) # tf.nn.l2_loss computes sum(T**2)/ 2
+            self.weighted_entropy = tf.reduce_mean(tf.losses.softmax_cross_entropy(y_, 
+                self.pruned_logits, self.sample_weights, reduction=tf.losses.Reduction.NONE))
+            self.unweighted_entropy = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=y_, 
+                logits=self.pruned_logits))
 
         # Create operations for loss and gradient calculation
         self.loss_and_gradients(self.imp_method)
 
-        # Store the current weights before doing a train step
-        self.get_current_weights()
+        if self.imp_method != 'PNN':
+            # Store the current weights before doing a train step
+            self.get_current_weights()
 
         # For GEM variants train ops will be defined later
         if 'GEM' not in self.imp_method:
@@ -229,18 +243,26 @@ class Model:
         elif self.imp_method == 'S-GEM' or self.imp_method == 'M-GEM':
             self.create_stochastic_gem_ops()
 
-        # Create weight save and store ops
-        self.weights_store_ops()
+        if self.imp_method != 'PNN':
+            # Create weight save and store ops
+            self.weights_store_ops()
 
-        # Summary operations for visualization
-        tf.summary.scalar("unweighted_entropy", self.unweighted_entropy)
-        for v in self.trainable_vars:
-            tf.summary.histogram(v.name.replace(":", "_"), v)
-        self.merged_summary = tf.summary.merge_all()
+            # Summary operations for visualization
+            tf.summary.scalar("unweighted_entropy", self.unweighted_entropy)
+            for v in self.trainable_vars:
+                tf.summary.histogram(v.name.replace(":", "_"), v)
+            self.merged_summary = tf.summary.merge_all()
 
         # Accuracy measure
-        self.correct_predictions = tf.equal(tf.argmax(self.pruned_logits, 1), tf.argmax(y_, 1))
-        self.accuracy = tf.reduce_mean(tf.cast(self.correct_predictions, tf.float32))
+        if self.imp_method == 'PNN':
+            self.correct_predictions = []
+            self.accuracy = []
+            for i in range(self.num_tasks):
+                self.correct_predictions.append(tf.equal(tf.argmax(task_logits[i], 1), tf.argmax(y_[i], 1)))
+                self.accuracy.append(tf.reduce_mean(tf.cast(self.correct_predictions[i], tf.float32)))
+        else:
+            self.correct_predictions = tf.equal(tf.argmax(self.pruned_logits, 1), tf.argmax(y_, 1))
+            self.accuracy = tf.reduce_mean(tf.cast(self.correct_predictions, tf.float32))
    
     def loss_and_train_ops_for_attr_vector(self, x, y_): 
         """
@@ -370,7 +392,64 @@ class Model:
             self.correct_predictions = tf.equal(tf.argmax(pruned_zst_logits, 1), tf.argmax(y_, 1))
 
         self.accuracy = tf.reduce_mean(tf.cast(self.correct_predictions, tf.float32))
-   
+  
+    def init_column_progNN(self, layer_dims, h, apply_dropout=False):
+        """
+        Defines the first column of Progressive NN
+        """
+        self.trainable_vars = []
+        self.h_pnn = []
+
+        self.trainable_vars.append([])
+        self.h_pnn.append([])
+        self.h_pnn[0].append(h)
+        for i in range(len(layer_dims)-1):
+            w = weight_variable([layer_dims[i], layer_dims[i+1]], name='fc_w_%d_t0'%(i))
+            b = bias_variable([layer_dims[i+1]], name='fc_b_%d_t0'%(i))
+            self.trainable_vars[0].append(w)
+            self.trainable_vars[0].append(b)
+            if i == len(layer_dims) - 2:
+                # Last layer (logits) - don't apply the relu
+                h = create_fc_layer(h, w, b, apply_relu=False)
+            else:
+                h = create_fc_layer(h, w, b)
+                if apply_dropout:
+                    h = tf.nn.dropout(h, 1)
+            self.h_pnn[0].append(h)
+
+        return h
+
+    def extensible_column_progNN(self, layer_dims, h, task, apply_dropout=False):
+        """
+        Define the subsequent columns of the progressive NN
+        """
+        self.trainable_vars.append([])
+        self.h_pnn.append([])
+        self.h_pnn[task].append(h)
+        for i in range(len(layer_dims)-1):
+            w = weight_variable([layer_dims[i], layer_dims[i+1]], name='fc_w_%d_t%d'%(i, task))
+            b = bias_variable([layer_dims[i+1]], name='fc_b_%d_t%d'%(i, task))
+            self.trainable_vars[task].append(w)
+            self.trainable_vars[task].append(b)
+            preactivation = create_fc_layer(h, w, b, apply_relu=False)
+            for tt in range(task):
+                U_w = weight_variable([layer_dims[i], layer_dims[i+1]], name='fc_uw_%d_t%d_tt%d'%(i, task, tt))
+                U_b = bias_variable([layer_dims[i+1]], name='fc_ub_%d_t%d_tt%d'%(i, task, tt))
+                self.trainable_vars[task].append(U_w)
+                self.trainable_vars[task].append(U_b)
+                preactivation += create_fc_layer(self.h_pnn[tt][i], U_w, U_b, apply_relu=False)
+            if i == len(layer_dims) - 2:
+                # Last layer (logits) - don't apply the relu
+                h = preactivation
+            else:
+                # layer < last layer, apply relu
+                h = tf.nn.relu(preactivation)
+                if apply_dropout:
+                    h = tf.nn.dropout(h)
+            self.h_pnn[task].append(h)
+
+        return h
+
     def fc_variables(self, layer_dims):
         """
         Defines variables for a 3-layer fc network
@@ -599,7 +678,7 @@ class Model:
         Returns:
         """
         reg = 0.0
-        if imp_method == 'VAN' or 'GEM' in imp_method:
+        if imp_method == 'VAN'  or imp_method == 'PNN' or 'GEM' in imp_method:
             pass
         elif imp_method == 'EWC' or imp_method == 'M-EWC':
             reg = tf.add_n([tf.reduce_sum(tf.square(w - w_star) * f) for w, w_star, 
@@ -621,15 +700,22 @@ class Model:
         if self.is_ATT_DATASET:
             self.unweighted_entropy += tf.add_n([0.0005 * tf.nn.l2_loss(v) for v in self.trainable_vars if 'weights' in v.name or 'kernel' in v.name])
         """
-
-        # Regularized training loss
-        self.reg_loss = tf.squeeze(self.unweighted_entropy + self.synap_stgth * reg)
-        # Compute the gradients of the vanilla loss
-        self.vanilla_gradients_vars = self.opt.compute_gradients(self.unweighted_entropy, 
-                var_list=self.trainable_vars)
-        # Compute the gradients of regularized loss
-        self.reg_gradients_vars = self.opt.compute_gradients(self.reg_loss, 
-                var_list=self.trainable_vars)
+        
+        if imp_method == 'PNN':
+            # Compute the gradients of regularized loss
+            self.reg_gradients_vars  = []
+            for i in range(self.num_tasks):
+                self.reg_gradients_vars.append([])
+                self.reg_gradients_vars[i] = self.opt.compute_gradients(self.unweighted_entropy[i], var_list=self.trainable_vars[i])
+        else:
+            # Regularized training loss
+            self.reg_loss = tf.squeeze(self.unweighted_entropy + self.synap_stgth * reg)
+            # Compute the gradients of the vanilla loss
+            self.vanilla_gradients_vars = self.opt.compute_gradients(self.unweighted_entropy, 
+                    var_list=self.trainable_vars)
+            # Compute the gradients of regularized loss
+            self.reg_gradients_vars = self.opt.compute_gradients(self.reg_loss, 
+                    var_list=self.trainable_vars)
 
     def train_op(self):
         """
@@ -639,8 +725,13 @@ class Model:
         Returns:
         """
         if self.imp_method == 'VAN':
-            # Define a training operation
+            # Define training operation
             self.train = self.opt.apply_gradients(self.reg_gradients_vars)
+        elif self.imp_method == 'PNN': 
+            # Define training operation
+            self.train = []
+            for i in range(self.num_tasks):
+                self.train.append(self.opt.apply_gradients(self.reg_gradients_vars[i]))
         elif self.imp_method == 'FTR_EXT':
             # Define a training operation for the first and subsequent tasks
             self.train = self.opt.apply_gradients(self.reg_gradients_vars)
@@ -659,6 +750,10 @@ class Model:
 
         Returns:
         """
+
+        if self.imp_method == 'PNN':
+            return
+
         for v in range(len(self.trainable_vars)):
 
             # List of variables for weight updates
@@ -1019,7 +1114,8 @@ class Model:
         """
         # Set the star values to the initial weights, so that we can calculate
         # big_omegas reliably
-        sess.run(self.set_star_vars)
+        if self.imp_method != 'PNN':
+            sess.run(self.set_star_vars)
 
     def task_updates(self, sess, task, train_x, train_labels, num_classes_per_task=10, class_attr=None, online_cross_val=False):
         """
@@ -1032,7 +1128,7 @@ class Model:
             class_attr          Class attributes (only needed for ZST transfer)
         Returns:
         """
-        if self.imp_method == 'VAN':
+        if self.imp_method == 'VAN' or self.imp_method == 'PNN':
             # We'll store the current parameters at the end of this function
             pass
         elif self.imp_method == 'EWC':

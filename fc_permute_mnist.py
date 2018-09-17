@@ -39,7 +39,7 @@ VALID_ARCHS = ['FC-S', 'FC-B']
 ARCH = 'FC-S'
 
 ## Model options
-MODELS = ['VAN', 'PI', 'EWC', 'MAS', 'GEM', 'RWALK', 'S-GEM', 'M-GEM','FTR_EXT'] #List of valid models 
+MODELS = ['VAN', 'PI', 'EWC', 'MAS', 'GEM', 'RWALK', 'S-GEM', 'M-GEM', 'FTR_EXT', 'PNN'] #List of valid models 
 IMP_METHOD = 'EWC'
 SYNAP_STGTH = 75000
 FISHER_EMA_DECAY = 0.9      # Exponential moving average decay factor for Fisher computation (online Fisher)
@@ -57,7 +57,7 @@ USE_GPU = True
 K_FOR_CROSS_VAL = 3
 TIME_MY_METHOD = False
 COUNT_VIOLATIONS = False
-MEASURE_PERF_ON_EPS_MEMORY = True
+MEASURE_PERF_ON_EPS_MEMORY = False
 
 ## Logging, saving and testing options
 LOG_DIR = './permute_mnist_results'
@@ -169,7 +169,7 @@ def train_task_sequence(model, sess, datasets, cross_validate_mode, train_single
             print('\t\tTask %d:'%(task))
 
             # If not the first task then restore weights from previous task
-            if(task > 0):
+            if(task > 0 and model.imp_method != 'PNN'):
                 model.restore(sess)
 
             # If sampling flag is set append the previous datasets
@@ -230,14 +230,23 @@ def train_task_sequence(model, sess, datasets, cross_validate_mode, train_single
 
                 offset = (iters * batch_size) % (num_train_examples - batch_size)
 
-                feed_dict = {model.x: train_x[offset:offset+batch_size], model.y_: train_y[offset:offset+batch_size], 
-                #feed_dict = {model.x: np.reshape(train_x[offset:offset+batch_size], (-1, IMG_HEIGHT, IMG_WIDTH, IMG_CHANNELS)), model.y_: train_y[offset:offset+batch_size], 
-                        model.sample_weights: task_sample_weights[offset:offset+batch_size],
-                        model.training_iters: num_iters, model.train_step: iters, model.keep_prob: 1.0, 
-                        model.output_mask: logit_mask, model.train_phase: True}
+                if model.imp_method == 'PNN':
+                    feed_dict = {model.x: train_x[offset:offset+batch_size], model.y_[task]: train_y[offset:offset+batch_size], 
+                            model.sample_weights: task_sample_weights[offset:offset+batch_size],
+                            model.training_iters: num_iters, model.train_step: iters, model.keep_prob: 1.0, 
+                            model.output_mask: logit_mask, model.train_phase: True}
+                else:
+                    feed_dict = {model.x: train_x[offset:offset+batch_size], model.y_: train_y[offset:offset+batch_size], 
+                            model.sample_weights: task_sample_weights[offset:offset+batch_size],
+                            model.training_iters: num_iters, model.train_step: iters, model.keep_prob: 1.0, 
+                            model.output_mask: logit_mask, model.train_phase: True}
 
                 if model.imp_method == 'VAN':
                     _, loss = sess.run([model.train, model.reg_loss], feed_dict=feed_dict)
+
+                elif model.imp_method == 'PNN':
+                    feed_dict[model.task_id] = task
+                    _, loss = sess.run([model.train[task], model.unweighted_entropy[task]], feed_dict=feed_dict)
 
                 elif model.imp_method == 'FTR_EXT':
                     if task == 0:
@@ -477,16 +486,19 @@ def test_task_sequence(model, sess, test_data, cross_validate_mode, eval_single_
         print(list_acc)
         return list_acc
 
-    if cross_validate_mode:
-        test_set = 'validation'
-    else:
-        test_set = 'test'
     for task, _ in enumerate(test_data):
-        feed_dict = {model.x: test_data[task][test_set]['images'], 
-        #feed_dict = {model.x: np.reshape(test_data[task][test_set]['images'], (-1, IMG_HEIGHT, IMG_WIDTH, IMG_CHANNELS)), 
-                model.y_: test_data[task][test_set]['labels'], model.keep_prob: 1.0, 
-                model.output_mask: logit_mask, model.train_phase: False}
-        acc = model.accuracy.eval(feed_dict = feed_dict)
+
+        if model.imp_method == 'PNN':
+            feed_dict = {model.x: test_data[task]['test']['images'], 
+                    model.y_[task]: test_data[task]['test']['labels'], model.keep_prob: 1.0, 
+                    model.output_mask: logit_mask, model.train_phase: False}
+            acc = model.accuracy[task].eval(feed_dict = feed_dict)
+        else:
+            feed_dict = {model.x: test_data[task]['test']['images'], 
+                    model.y_: test_data[task]['test']['labels'], model.keep_prob: 1.0, 
+                    model.output_mask: logit_mask, model.train_phase: False}
+            acc = model.accuracy.eval(feed_dict = feed_dict)
+
         list_acc.append(acc)
 
     return list_acc
@@ -561,7 +573,12 @@ def main():
         # Define Input and Output of the model
         x = tf.placeholder(tf.float32, shape=[None, INPUT_FEATURE_SIZE])
         #x = tf.placeholder(tf.float32, shape=[None, IMG_HEIGHT, IMG_WIDTH, IMG_CHANNELS])
-        y_ = tf.placeholder(tf.float32, shape=[None, TOTAL_CLASSES])
+        if args.imp_method == 'PNN':
+            y_ = []
+            for i in range(num_tasks):
+                y_.append(tf.placeholder(tf.float32, shape=[None, TOTAL_CLASSES]))
+        else:
+            y_ = tf.placeholder(tf.float32, shape=[None, TOTAL_CLASSES])
 
         # Define the optimizer
         if args.optim == 'ADAM':
