@@ -51,12 +51,13 @@ IMG_CHANNELS = 3
 TOTAL_CLASSES = 100          # Total number of classes in the dataset 
 VISUALIZE_IMPORTANCE_MEASURE = False
 MEASURE_CONVERGENCE_AFTER = 0.9
-EPS_MEM_BATCH_SIZE = 1280
+EPS_MEM_BATCH_SIZE = 1300
 KEEP_EPISODIC_MEMORY_FULL = False
 DEBUG_EPISODIC_MEMORY = False
 K_FOR_CROSS_VAL = 3
 TIME_MY_METHOD = False
 COUNT_VIOLATONS = False
+MEASURE_PERF_ON_EPS_MEMORY = True
 
 ## Logging, saving and testing options
 LOG_DIR = './split_cifar_results'
@@ -146,7 +147,7 @@ def get_arguments():
     return parser.parse_args()
 
 def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode, train_single_epoch, eval_single_head, do_sampling, is_herding, 
-        episodic_mem_size, train_iters, batch_size, num_runs, online_cross_val):
+        episodic_mem_size, train_iters, batch_size, num_runs, online_cross_val, classes_per_task):
     """
     Train and evaluate LLL system such that we only see a example once
     Args:
@@ -284,7 +285,7 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
             for iters in range(num_iters):
 
                 if train_single_epoch and not cross_validate_mode:
-                    if (iters <= 50 and iters % 5 == 0) or (iters > 50 and iters % 50 == 0):
+                    if (iters <= 20) or (iters > 20 and iters % 50 == 0):
                         # Snapshot the current performance across all tasks after each mini-batch
                         fbatch = test_task_sequence(model, sess, datasets, task_labels, online_cross_val, eval_single_head=eval_single_head, test_labels=test_labels)
                         ftask.append(fbatch)
@@ -468,7 +469,7 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
 
             # Compute the inter-task updates, Fisher/ importance scores etc
             # Don't calculate the task updates for the last task
-            if task < len(datasets) - 1:
+            if task < len(datasets) - 1 or MEASURE_PERF_ON_EPS_MEMORY:
                 model.task_updates(sess, task, task_train_images, task_labels[task]) # TODO: For MAS, should the gradients be for current task or all the previous tasks
                 print('\t\t\t\tTask updates after Task%d done!'%(task))
 
@@ -583,8 +584,16 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
                 ftask.append(fbatch)
                 ftask = np.array(ftask)
             else:
-                # List to store accuracy for all the tasks for the current trained model
-                ftask = test_task_sequence(model, sess, datasets, task_labels, online_cross_val, eval_single_head=eval_single_head, test_labels=test_labels)
+                if MEASURE_PERF_ON_EPS_MEMORY:
+                    eps_mem = {
+                            'images': episodic_images, 
+                            'labels': episodic_labels,
+                            }
+                    # Measure perf on episodic memory
+                    ftask = test_task_sequence(model, sess, eps_mem, task_labels, online_cross_val, eval_single_head=eval_single_head, test_labels=test_labels, classes_per_task=classes_per_task)
+                else:
+                    # List to store accuracy for all the tasks for the current trained model
+                    ftask = test_task_sequence(model, sess, datasets, task_labels, online_cross_val, eval_single_head=eval_single_head, test_labels=test_labels)
            
             # Store the accuracies computed at task T in a list
             evals.append(ftask)
@@ -601,7 +610,7 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
 
     return runs
 
-def test_task_sequence(model, sess, test_data, test_tasks, cross_validate_mode, eval_single_head=True, test_labels=None):
+def test_task_sequence(model, sess, test_data, test_tasks, cross_validate_mode, eval_single_head=True, test_labels=None, classes_per_task=0):
     """
     Snapshot the current performance
     """
@@ -610,13 +619,26 @@ def test_task_sequence(model, sess, test_data, test_tasks, cross_validate_mode, 
         return np.zeros(model.num_tasks)
 
     list_acc = []
+    logit_mask = np.zeros(TOTAL_CLASSES)
+
+    if MEASURE_PERF_ON_EPS_MEMORY:
+        for task, labels in enumerate(test_tasks):
+            # Multi-head evaluation setting
+            logit_mask[:] = 0
+            logit_mask[labels] = 1.0
+            mem_offset = task*SAMPLES_PER_CLASS*classes_per_task
+            feed_dict = {model.x: test_data['images'][mem_offset:mem_offset+SAMPLES_PER_CLASS*classes_per_task], 
+                    model.y_: test_data['labels'][mem_offset:mem_offset+SAMPLES_PER_CLASS*classes_per_task], model.keep_prob: 1.0, model.train_phase: False, model.output_mask: logit_mask}
+            acc = model.accuracy.eval(feed_dict = feed_dict)
+            list_acc.append(acc)
+        print(list_acc)
+        return list_acc
 
     if cross_validate_mode:
         test_set = 'validation'
     else:
         test_set = 'test'
 
-    logit_mask = np.zeros(TOTAL_CLASSES)
     if eval_single_head:
         # Single-head evaluation setting
         logit_mask[:len(test_labels)] = 1.0
@@ -740,7 +762,7 @@ def main():
         time_start = time.time()
         with tf.Session(config=config, graph=graph) as sess:
             runs = train_task_sequence(model, sess, datasets, task_labels, args.cross_validate_mode, args.train_single_epoch, args.eval_single_head, 
-                    args.do_sampling, args.is_herding, args.mem_size*total_classes, args.train_iters, args.batch_size, args.num_runs, args.online_cross_val)
+                    args.do_sampling, args.is_herding, args.mem_size*total_classes, args.train_iters, args.batch_size, args.num_runs, args.online_cross_val, classes_per_task)
             # Close the session
             sess.close()
         time_end = time.time()

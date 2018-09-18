@@ -57,6 +57,7 @@ USE_GPU = True
 K_FOR_CROSS_VAL = 3
 TIME_MY_METHOD = False
 COUNT_VIOLATIONS = False
+MEASURE_PERF_ON_EPS_MEMORY = True
 
 ## Logging, saving and testing options
 LOG_DIR = './permute_mnist_results'
@@ -350,7 +351,7 @@ def train_task_sequence(model, sess, datasets, cross_validate_mode, train_single
 
             # Compute the inter-task updates, Fisher/ importance scores etc
             # Don't calculate the task updates for the last task
-            if task < len(datasets) - 1:
+            if task < len(datasets) - 1 or MEASURE_PERF_ON_EPS_MEMORY:
                 model.task_updates(sess, task, task_train_images, np.arange(TOTAL_CLASSES))
                 print('\t\t\t\tTask updates after Task%d done!'%(task))
 
@@ -428,8 +429,16 @@ def train_task_sequence(model, sess, datasets, cross_validate_mode, train_single
                 ftask.append(fbatch)
                 ftask = np.array(ftask)
             else:
-                # List to store accuracy for all the tasks for the current trained model
-                ftask = test_task_sequence(model, sess, datasets, online_cross_val, eval_single_head=eval_single_head)
+                if MEASURE_PERF_ON_EPS_MEMORY:
+                    eps_mem = {
+                            'images': episodic_images, 
+                            'labels': episodic_labels,
+                            }
+                    # Measure perf on episodic memory
+                    ftask = test_task_sequence(model, sess, eps_mem, online_cross_val, eval_single_head=eval_single_head)
+                else:
+                    # List to store accuracy for all the tasks for the current trained model
+                    ftask = test_task_sequence(model, sess, datasets, online_cross_val, eval_single_head=eval_single_head)
             
             # Store the accuracies computed at task T in a list
             evals.append(ftask)
@@ -456,6 +465,18 @@ def test_task_sequence(model, sess, test_data, cross_validate_mode, eval_single_
 
     list_acc = []
     logit_mask = np.ones(TOTAL_CLASSES)
+
+    if MEASURE_PERF_ON_EPS_MEMORY:
+        for task in range(model.num_tasks):
+            mem_offset = task*SAMPLES_PER_CLASS*TOTAL_CLASSES
+            feed_dict = {model.x: test_data['images'][mem_offset:mem_offset+SAMPLES_PER_CLASS*TOTAL_CLASSES], 
+                    model.y_: test_data['labels'][mem_offset:mem_offset+SAMPLES_PER_CLASS*TOTAL_CLASSES], model.keep_prob: 1.0, 
+                    model.output_mask: logit_mask, model.train_phase: False}
+            acc = model.accuracy.eval(feed_dict = feed_dict)
+            list_acc.append(acc)
+        print(list_acc)
+        return list_acc
+
     if cross_validate_mode:
         test_set = 'validation'
     else:
