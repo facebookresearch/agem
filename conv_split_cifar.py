@@ -39,7 +39,7 @@ VALID_ARCHS = ['CNN', 'RESNET-S', 'RESNET-B', 'VGG']
 ARCH = 'RESNET-S'
 
 ## Model options
-MODELS = ['VAN', 'PI', 'EWC', 'MAS', 'GEM', 'RWALK', 'M-EWC', 'M-GEM', 'S-GEM', 'FTR_EXT'] #List of valid models 
+MODELS = ['VAN', 'PI', 'EWC', 'MAS', 'GEM', 'RWALK', 'M-EWC', 'M-GEM', 'S-GEM', 'FTR_EXT', 'PNN'] #List of valid models 
 IMP_METHOD = 'EWC'
 SYNAP_STGTH = 75000
 FISHER_EMA_DECAY = 0.9          # Exponential moving average decay factor for Fisher computation (online Fisher)
@@ -57,7 +57,7 @@ DEBUG_EPISODIC_MEMORY = False
 K_FOR_CROSS_VAL = 3
 TIME_MY_METHOD = False
 COUNT_VIOLATONS = False
-MEASURE_PERF_ON_EPS_MEMORY = True
+MEASURE_PERF_ON_EPS_MEMORY = False
 
 ## Logging, saving and testing options
 LOG_DIR = './split_cifar_results'
@@ -201,7 +201,7 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
             print('\t\tTask %d:'%(task))
         
             # If not the first task then restore weights from previous task
-            if(task > 0):
+            if(task > 0 and model.imp_method != 'PNN'):
                 model.restore(sess)
 
             # If sampling flag is set append the previous datasets
@@ -303,10 +303,16 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
                     else:
                         residual = num_train_examples - offset
 
-                    feed_dict = {model.x: train_x[offset:offset+residual], model.y_: train_y[offset:offset+residual], 
-                            model.sample_weights: task_sample_weights[offset:offset+residual],
-                            model.training_iters: num_iters, model.train_step: iters, model.keep_prob: 0.5, 
-                            model.train_phase: True}
+                    if model.imp_method == 'PNN':
+                        feed_dict = {model.x: train_x[offset:offset+residual], model.y_[task]: train_y[offset:offset+residual], 
+                                model.sample_weights: task_sample_weights[offset:offset+residual],
+                                model.training_iters: num_iters, model.train_step: iters, model.keep_prob: 0.5, 
+                                model.train_phase: True}
+                    else:
+                        feed_dict = {model.x: train_x[offset:offset+residual], model.y_: train_y[offset:offset+residual], 
+                                model.sample_weights: task_sample_weights[offset:offset+residual],
+                                model.training_iters: num_iters, model.train_step: iters, model.keep_prob: 0.5, 
+                                model.train_phase: True}
                 else:
                     offset = (iters * batch_size) % (num_train_examples - batch_size)
                     feed_dict = {model.x: train_x[offset:offset+batch_size], model.y_: train_y[offset:offset+batch_size], 
@@ -317,6 +323,10 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
                 if model.imp_method == 'VAN':
                     feed_dict[model.output_mask] = logit_mask
                     _, loss = sess.run([model.train, model.reg_loss], feed_dict=feed_dict)
+
+                elif model.imp_method == 'PNN':
+                    feed_dict[model.task_id] = task
+                    _, loss = sess.run([model.train[task], model.unweighted_entropy[task]], feed_dict=feed_dict)
 
                 elif model.imp_method == 'FTR_EXT':
                     feed_dict[model.output_mask] = logit_mask
@@ -631,28 +641,29 @@ def test_task_sequence(model, sess, test_data, test_tasks, cross_validate_mode, 
                     model.y_: test_data['labels'][mem_offset:mem_offset+SAMPLES_PER_CLASS*classes_per_task], model.keep_prob: 1.0, model.train_phase: False, model.output_mask: logit_mask}
             acc = model.accuracy.eval(feed_dict = feed_dict)
             list_acc.append(acc)
-        print(list_acc)
         return list_acc
-
-    if cross_validate_mode:
-        test_set = 'validation'
-    else:
-        test_set = 'test'
 
     if eval_single_head:
         # Single-head evaluation setting
         logit_mask[:len(test_labels)] = 1.0
 
     for task, labels in enumerate(test_tasks):
-        #print('Test time unique labels in the task {}: {}'.format(task, labels))
-        if not eval_single_head:
-            # Multi-head evaluation setting
-            logit_mask[:] = 0
-            logit_mask[labels] = 1.0
 
-        feed_dict = {model.x: test_data[task][test_set]['images'], 
-                model.y_: test_data[task][test_set]['labels'], model.keep_prob: 1.0, model.train_phase: False, model.output_mask: logit_mask}
-        acc = model.accuracy.eval(feed_dict = feed_dict)
+        if model.imp_method == 'PNN':
+            feed_dict = {model.x: test_data[task]['test']['images'], 
+                    model.y_[task]: test_data[task]['test']['labels'], model.keep_prob: 1.0, model.train_phase: False}
+            acc = model.accuracy[task].eval(feed_dict = feed_dict)
+            print('Task: {}, Acc: {}'.format(task, acc))
+        else:
+            if not eval_single_head:
+                # Multi-head evaluation setting
+                logit_mask[:] = 0
+                logit_mask[labels] = 1.0
+
+            feed_dict = {model.x: test_data[task]['test']['images'], 
+                    model.y_: test_data[task]['test']['labels'], model.keep_prob: 1.0, model.train_phase: False, model.output_mask: logit_mask}
+            acc = model.accuracy.eval(feed_dict = feed_dict)
+
         list_acc.append(acc)
 
     return list_acc
@@ -737,7 +748,12 @@ def main():
 
         # Define Input and Output of the model
         x = tf.placeholder(tf.float32, shape=[None, IMG_HEIGHT, IMG_WIDTH, IMG_CHANNELS])
-        y_ = tf.placeholder(tf.float32, shape=[None, TOTAL_CLASSES])
+        if args.imp_method == 'PNN':
+            y_ = []
+            for i in range(num_tasks):
+                y_.append(tf.placeholder(tf.float32, shape=[None, TOTAL_CLASSES]))
+        else:
+            y_ = tf.placeholder(tf.float32, shape=[None, TOTAL_CLASSES])
 
         # Define the optimizer
         if args.optim == 'ADAM':

@@ -30,7 +30,7 @@ def create_fc_layer(input, w, b, apply_relu=True):
 
     return output
 
-def create_conv_layer(input, w, b, apply_relu=True):
+def create_conv_layer(input, w, b, stride=1, apply_relu=True):
     """
     Construct a convolutional layer
     Args:
@@ -44,7 +44,7 @@ def create_conv_layer(input, w, b, apply_relu=True):
     """
     with tf.name_scope('conv_layer'):
         # Do the convolution operation
-        output = tf.nn.conv2d(input, w, [1, 1, 1, 1], padding='SAME') + b
+        output = tf.nn.conv2d(input, w, [1, stride, stride, 1], padding='SAME') + b
 
         # Apply relu
         if apply_relu:
