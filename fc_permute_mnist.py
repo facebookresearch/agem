@@ -160,6 +160,9 @@ def train_task_sequence(model, sess, datasets, cross_validate_mode, train_single
         # Mask for softmax
         # Since all the classes are present in all the tasks so nothing to mask
         logit_mask = np.ones(TOTAL_CLASSES)
+        if model.imp_method == 'PNN':
+            pnn_logit_mask = np.ones([model.num_tasks, TOTAL_CLASSES])
+
         if COUNT_VIOLATIONS:
             violation_count = np.zeros(model.num_tasks)
             vc = 0
@@ -235,6 +238,8 @@ def train_task_sequence(model, sess, datasets, cross_validate_mode, train_single
                             model.sample_weights: task_sample_weights[offset:offset+batch_size],
                             model.training_iters: num_iters, model.train_step: iters, model.keep_prob: 1.0, 
                             model.output_mask: logit_mask, model.train_phase: True}
+                    logit_mask_dict = {m_t: i_t for (m_t, i_t) in zip(model.output_mask, pnn_logit_mask)}
+                    feed_dict.update(logit_mask_dict)
                 else:
                     feed_dict = {model.x: train_x[offset:offset+batch_size], model.y_: train_y[offset:offset+batch_size], 
                             model.sample_weights: task_sample_weights[offset:offset+batch_size],
@@ -473,7 +478,10 @@ def test_task_sequence(model, sess, test_data, cross_validate_mode, eval_single_
         return np.zeros(model.num_tasks)
 
     list_acc = []
-    logit_mask = np.ones(TOTAL_CLASSES)
+    if mode.imp_method == 'PNN':
+        pnn_logit_mask = np.ones([model.num_tasks, TOTAL_CLASSES])
+    else:
+        logit_mask = np.ones(TOTAL_CLASSES)
 
     if MEASURE_PERF_ON_EPS_MEMORY:
         for task in range(model.num_tasks):
@@ -492,6 +500,8 @@ def test_task_sequence(model, sess, test_data, cross_validate_mode, eval_single_
             feed_dict = {model.x: test_data[task]['test']['images'], 
                     model.y_[task]: test_data[task]['test']['labels'], model.keep_prob: 1.0, 
                     model.output_mask: logit_mask, model.train_phase: False}
+            logit_mask_dict = {m_t: i_t for (m_t, i_t) in zip(model.output_mask, pnn_logit_mask)}
+            feed_dict.update(logit_mask_dict)
             acc = model.accuracy[task].eval(feed_dict = feed_dict)
         else:
             feed_dict = {model.x: test_data[task]['test']['images'], 

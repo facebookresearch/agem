@@ -67,9 +67,11 @@ class Model:
             self.train_phase = []
             self.total_classes = int(self.y_[0].get_shape()[1])
             self.train_phase = [tf.placeholder(tf.bool, name='train_phase_%d'%(i)) for i in range(num_tasks)]
+            self.output_mask = [tf.placeholder(dtype=tf.float32, shape=[self.total_classes]) for i in range(num_tasks)]
         else:
             self.total_classes = int(self.y_.get_shape()[1])
             self.train_phase = tf.placeholder(tf.bool, name='train_phase')
+            self.output_mask = tf.placeholder(dtype=tf.float32, shape=[self.total_classes])
         self.sample_weights = tf.placeholder(tf.float32, shape=[None])
         self.task_id = tf.placeholder(dtype=tf.int32, shape=())
         self.store_grad_batches = tf.placeholder(dtype=tf.float32, shape=())
@@ -77,7 +79,6 @@ class Model:
         self.train_samples = tf.placeholder(dtype=tf.float32, shape=())
         self.training_iters = tf.placeholder(dtype=tf.float32, shape=())
         self.train_step = tf.placeholder(dtype=tf.float32, shape=())
-        self.output_mask = tf.placeholder(dtype=tf.float32, shape=[self.total_classes])
         self.violation_count = tf.Variable(0, dtype=tf.float32, trainable=False)
         self.is_ATT_DATASET = is_ATT_DATASET # To use a different (standard one) ResNet-18 for CUB
         if x_test is not None:
@@ -208,7 +209,9 @@ class Model:
 
         # Prune the predictions to only include the classes for which
         # the training data is present
-        if self.imp_method != 'PNN':
+        if self.imp_method == 'PNN':
+            self.task_pruned_logits = [tf.where(tf.tile(tf.equal(self.output_mask[i][None,:], 1.0), [tf.shape(self.task_logits[i])[0], 1]), self.task_logits[i], NEG_INF*tf.ones_like(self.task_logits[i])) for i in range(self.num_tasks)]
+        else:
             self.pruned_logits = tf.where(tf.tile(tf.equal(self.output_mask[None,:], 1.0), 
                 [tf.shape(logits)[0], 1]), logits, NEG_INF*tf.ones_like(logits))
 
@@ -271,7 +274,7 @@ class Model:
             self.correct_predictions = []
             self.accuracy = []
             for i in range(self.num_tasks):
-                self.correct_predictions.append(tf.equal(tf.argmax(self.task_logits[i], 1), tf.argmax(y_[i], 1)))
+                self.correct_predictions.append(tf.equal(tf.argmax(self.task_pruned_logits[i], 1), tf.argmax(y_[i], 1)))
                 self.accuracy.append(tf.reduce_mean(tf.cast(self.correct_predictions[i], tf.float32)))
         else:
             self.correct_predictions = tf.equal(tf.argmax(self.pruned_logits, 1), tf.argmax(y_, 1))

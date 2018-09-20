@@ -208,6 +208,7 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
             if model.imp_method == 'PNN':
                 pnn_train_phase = np.array(np.zeros(model.num_tasks), dtype=np.bool)
                 pnn_train_phase[task] = True
+                pnn_logit_mask = np.zeros([model.num_tasks, TOTAL_CLASSES])
 
             # If sampling flag is set append the previous datasets
             if(do_sampling and task > 0):
@@ -299,6 +300,8 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
                         if model.imp_method == 'PNN':
                             pnn_train_phase[:] = False
                             pnn_train_phase[task] = True
+                            pnn_logit_mask[:] = 0
+                            pnn_logit_mask[task][task_labels[task]] = 1.0
                         if do_sampling:
                             logit_mask[test_labels] = 1.0
                         else:
@@ -315,7 +318,9 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
                         feed_dict = {model.x: train_x[offset:offset+residual], model.y_[task]: train_y[offset:offset+residual], 
                                 model.training_iters: num_iters, model.train_step: iters, model.keep_prob: 0.5}
                         train_phase_dict = {m_t: i_t for (m_t, i_t) in zip(model.train_phase, pnn_train_phase)}
+                        logit_mask_dict = {m_t: i_t for (m_t, i_t) in zip(model.output_mask, pnn_logit_mask)}
                         feed_dict.update(train_phase_dict)
+                        feed_dict.update(logit_mask_dict)
                     else:
                         feed_dict = {model.x: train_x[offset:offset+residual], model.y_: train_y[offset:offset+residual], 
                                 model.sample_weights: task_sample_weights[offset:offset+residual],
@@ -327,7 +332,9 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
                         feed_dict = {model.x: train_x[offset:offset+batch_size], model.y_[task]: train_y[offset:offset+batch_size], 
                                 model.training_iters: num_iters, model.train_step: iters, model.keep_prob: 0.5}
                         train_phase_dict = {m_t: i_t for (m_t, i_t) in zip(model.train_phase, pnn_train_phase)}
+                        logit_mask_dict = {m_t: i_t for (m_t, i_t) in zip(model.output_mask, pnn_logit_mask)}
                         feed_dict.update(train_phase_dict)
+                        feed_dict.update(logit_mask_dict)
                     else:
                         feed_dict = {model.x: train_x[offset:offset+batch_size], model.y_: train_y[offset:offset+batch_size], 
                                 model.sample_weights: task_sample_weights[offset:offset+batch_size],
@@ -610,6 +617,8 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
                 if model.imp_method == 'PNN':
                     pnn_train_phase[:] = False
                     pnn_train_phase[task] = True
+                    pnn_logit_mask[:] = 0
+                    pnn_logit_mask[task][task_labels[task]] = 1.0
             else:
                 if MEASURE_PERF_ON_EPS_MEMORY:
                     eps_mem = {
@@ -621,6 +630,7 @@ def train_task_sequence(model, sess, datasets, task_labels, cross_validate_mode,
                 else:
                     # List to store accuracy for all the tasks for the current trained model
                     ftask = test_task_sequence(model, sess, datasets, task_labels, online_cross_val, eval_single_head=eval_single_head, test_labels=test_labels)
+                    print('Task: {}, Acc: {}'.format(task, ftask))
            
             # Store the accuracies computed at task T in a list
             evals.append(ftask)
@@ -646,7 +656,10 @@ def test_task_sequence(model, sess, test_data, test_tasks, cross_validate_mode, 
         return np.zeros(model.num_tasks)
 
     list_acc = []
-    logit_mask = np.zeros(TOTAL_CLASSES)
+    if model.imp_method == 'PNN':
+        pnn_logit_mask = np.zeros([model.num_tasks, TOTAL_CLASSES])
+    else:
+        logit_mask = np.zeros(TOTAL_CLASSES)
 
     if MEASURE_PERF_ON_EPS_MEMORY:
         for task, labels in enumerate(test_tasks):
@@ -668,10 +681,14 @@ def test_task_sequence(model, sess, test_data, test_tasks, cross_validate_mode, 
 
         if model.imp_method == 'PNN':
             pnn_train_phase = np.array(np.zeros(model.num_tasks), dtype=np.bool)
+            pnn_logit_mask[:] = 0
+            pnn_logit_mask[task][labels] = 1.0
             feed_dict = {model.x: test_data[task]['test']['images'], 
                     model.y_[task]: test_data[task]['test']['labels'], model.keep_prob: 1.0}
             train_phase_dict = {m_t: i_t for (m_t, i_t) in zip(model.train_phase, pnn_train_phase)}
+            logit_mask_dict = {m_t: i_t for (m_t, i_t) in zip(model.output_mask, pnn_logit_mask)}
             feed_dict.update(train_phase_dict)
+            feed_dict.update(logit_mask_dict)
 
             acc = model.accuracy[task].eval(feed_dict = feed_dict)
         else:
