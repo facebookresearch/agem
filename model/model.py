@@ -64,9 +64,12 @@ class Model:
         # Define some placeholders which are used to feed the data to the model
         self.y_ = y_
         if imp_method == 'PNN':
+            self.train_phase = []
             self.total_classes = int(self.y_[0].get_shape()[1])
+            self.train_phase = [tf.placeholder(tf.bool, name='train_phase_%d'%(i)) for i in range(num_tasks)]
         else:
             self.total_classes = int(self.y_.get_shape()[1])
+            self.train_phase = tf.placeholder(tf.bool, name='train_phase')
         self.sample_weights = tf.placeholder(tf.float32, shape=[None])
         self.task_id = tf.placeholder(dtype=tf.int32, shape=())
         self.store_grad_batches = tf.placeholder(dtype=tf.float32, shape=())
@@ -74,7 +77,6 @@ class Model:
         self.train_samples = tf.placeholder(dtype=tf.float32, shape=())
         self.training_iters = tf.placeholder(dtype=tf.float32, shape=())
         self.train_step = tf.placeholder(dtype=tf.float32, shape=())
-        self.train_phase = tf.placeholder(tf.bool, name='train_phase')
         self.output_mask = tf.placeholder(dtype=tf.float32, shape=[self.total_classes])
         self.violation_count = tf.Variable(0, dtype=tf.float32, trainable=False)
         self.is_ATT_DATASET = is_ATT_DATASET # To use a different (standard one) ResNet-18 for CUB
@@ -148,15 +150,15 @@ class Model:
             input_dim = int(x.get_shape()[1])
             layer_dims = [input_dim, 256, 256, self.total_classes]
             if self.imp_method == 'PNN':
-                task_logits = []
+                self.task_logits = []
                 self.unweighted_entropy = []
                 for i in range(self.num_tasks):
                     if i == 0:
-                        task_logits.append(self.init_fc_column_progNN(layer_dims, x))
-                        self.unweighted_entropy.append(tf.squeeze(tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=y_[i], logits=task_logits[i])))) # mult by mean(y_[i]) puts unwaranted loss to 0
+                        self.task_logits.append(self.init_fc_column_progNN(layer_dims, x))
+                        self.unweighted_entropy.append(tf.squeeze(tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=y_[i], logits=self.task_logits[i])))) # mult by mean(y_[i]) puts unwaranted loss to 0
                     else:
-                        task_logits.append(self.extensible_fc_column_progNN(layer_dims, x, i))
-                        self.unweighted_entropy.append(tf.squeeze(tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=y_[i], logits=task_logits[i])))) # mult by mean(y_[i]) puts unwaranted loss to 0
+                        self.task_logits.append(self.extensible_fc_column_progNN(layer_dims, x, i))
+                        self.unweighted_entropy.append(tf.squeeze(tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=y_[i], logits=self.task_logits[i])))) # mult by mean(y_[i]) puts unwaranted loss to 0
             else:
                 self.fc_variables(layer_dims)
                 logits = self.fc_feedforward(x, self.weights, self.biases)
@@ -185,15 +187,15 @@ class Model:
             filters = [20, 20, 40, 80, 160]
             strides = [1, 0, 2, 2, 2]
             if self.imp_method == 'PNN':
-                task_logits = []
+                self.task_logits = []
                 self.unweighted_entropy = []
                 for i in range(self.num_tasks):
                     if i == 0:
-                        task_logits.append(self.init_resent_column_progNN(x, kernels, filters, strides))
-                        self.unweighted_entropy.append(tf.squeeze(tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=y_[i], logits=task_logits[i]))))
+                        self.task_logits.append(self.init_resent_column_progNN(x, kernels, filters, strides))
+                        self.unweighted_entropy.append(tf.squeeze(tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=y_[i], logits=self.task_logits[i]))))
                     else:
-                        task_logits.append(self.extensible_resnet_column_progNN(x, kernels, filters, strides, i))
-                        self.unweighted_entropy.append(tf.squeeze(tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=y_[i], logits=task_logits[i]))))
+                       self.task_logits.append(self.extensible_resnet_column_progNN(x, kernels, filters, strides, i))
+                       self.unweighted_entropy.append(tf.squeeze(tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=y_[i], logits=self.task_logits[i]))))
             else:
                 logits = self.resnet18_conv_feedforward(x, kernels, filters, strides)
 
@@ -269,7 +271,7 @@ class Model:
             self.correct_predictions = []
             self.accuracy = []
             for i in range(self.num_tasks):
-                self.correct_predictions.append(tf.equal(tf.argmax(task_logits[i], 1), tf.argmax(y_[i], 1)))
+                self.correct_predictions.append(tf.equal(tf.argmax(self.task_logits[i], 1), tf.argmax(y_[i], 1)))
                 self.accuracy.append(tf.reduce_mean(tf.cast(self.correct_predictions[i], tf.float32)))
         else:
             self.correct_predictions = tf.equal(tf.argmax(self.pruned_logits, 1), tf.argmax(y_, 1))
@@ -474,28 +476,28 @@ class Model:
 
         # Conv1
         h = _conv(x, kernels[0], filters[0], strides[0], self.trainable_vars[0], name='conv_1_t0')
-        h = _bn(h, self.trainable_vars[0], self.train_phase, name='bn_1_t0')
+        h = _bn(h, self.trainable_vars[0], self.train_phase[0], name='bn_1_t0')
         h = tf.nn.relu(h)
         self.h_pnn[0].append(h)
 
         # Conv2_x
-        h = _residual_block(h, self.trainable_vars[0], self.train_phase, name='conv2_1_t0')
-        h = _residual_block(h, self.trainable_vars[0], self.train_phase, name='conv2_2_t0')
+        h = _residual_block(h, self.trainable_vars[0], self.train_phase[0], name='conv2_1_t0')
+        h = _residual_block(h, self.trainable_vars[0], self.train_phase[0], name='conv2_2_t0')
         self.h_pnn[0].append(h)
 
         # Conv3_x
-        h = _residual_block_first(h, filters[2], strides[2], self.trainable_vars[0], self.train_phase, name='conv3_1_t0', is_ATT_DATASET=self.is_ATT_DATASET)
-        h = _residual_block(h, self.trainable_vars[0], self.train_phase, name='conv3_2_t0')
+        h = _residual_block_first(h, filters[2], strides[2], self.trainable_vars[0], self.train_phase[0], name='conv3_1_t0', is_ATT_DATASET=self.is_ATT_DATASET)
+        h = _residual_block(h, self.trainable_vars[0], self.train_phase[0], name='conv3_2_t0')
         self.h_pnn[0].append(h)
 
         # Conv4_x
-        h = _residual_block_first(h, filters[3], strides[3], self.trainable_vars[0], self.train_phase, name='conv4_1_t0', is_ATT_DATASET=self.is_ATT_DATASET)
-        h = _residual_block(h, self.trainable_vars[0], self.train_phase, name='conv4_2_t0')
+        h = _residual_block_first(h, filters[3], strides[3], self.trainable_vars[0], self.train_phase[0], name='conv4_1_t0', is_ATT_DATASET=self.is_ATT_DATASET)
+        h = _residual_block(h, self.trainable_vars[0], self.train_phase[0], name='conv4_2_t0')
         self.h_pnn[0].append(h)
 
         # Conv5_x
-        h = _residual_block_first(h, filters[4], strides[4], self.trainable_vars[0], self.train_phase, name='conv5_1_t0', is_ATT_DATASET=self.is_ATT_DATASET)
-        h = _residual_block(h, self.trainable_vars[0], self.train_phase, name='conv5_2_t0')
+        h = _residual_block_first(h, filters[4], strides[4], self.trainable_vars[0], self.train_phase[0], name='conv5_1_t0', is_ATT_DATASET=self.is_ATT_DATASET)
+        h = _residual_block(h, self.trainable_vars[0], self.train_phase[0], name='conv5_2_t0')
         self.h_pnn[0].append(h)
 
         # Apply average pooling
@@ -516,7 +518,7 @@ class Model:
 
         # Conv1
         h = _conv(x, kernels[0], filters[0], strides[0], self.trainable_vars[task], name='conv_1_t%d'%(task))
-        h = _bn(h, self.trainable_vars[task], self.train_phase, name='bn_1_t%d'%(task))
+        h = _bn(h, self.trainable_vars[task], self.train_phase[task], name='bn_1_t%d'%(task))
         # Add lateral connections
         for tt in range(task):
             U_w = weight_variable([1, 1, self.h_pnn[tt][0].get_shape().as_list()[-1], h.get_shape().as_list()[-1]], name='conv_1_w_t%d_tt%d'%(task, tt))
@@ -528,8 +530,8 @@ class Model:
         self.h_pnn[task].append(h)
 
         # Conv2_x
-        h = _residual_block(h, self.trainable_vars[task], self.train_phase, name='conv2_1_t%d'%(task))
-        h = _residual_block(h, self.trainable_vars[task], self.train_phase, apply_relu=False, name='conv2_2_t%d'%(task))
+        h = _residual_block(h, self.trainable_vars[task], self.train_phase[task], name='conv2_1_t%d'%(task))
+        h = _residual_block(h, self.trainable_vars[task], self.train_phase[task], apply_relu=False, name='conv2_2_t%d'%(task))
         # Add lateral connections
         for tt in range(task):
             U_w = weight_variable([1, 1, self.h_pnn[tt][1].get_shape().as_list()[-1], h.get_shape().as_list()[-1]], name='conv_2_w_t%d_tt%d'%(task, tt))
@@ -541,8 +543,8 @@ class Model:
         self.h_pnn[task].append(h)
 
         # Conv3_x
-        h = _residual_block_first(h, filters[2], strides[2], self.trainable_vars[task], self.train_phase, name='conv3_1_t%d'%(task), is_ATT_DATASET=self.is_ATT_DATASET)
-        h = _residual_block(h, self.trainable_vars[task], self.train_phase, apply_relu=False, name='conv3_2_t%d'%(task))
+        h = _residual_block_first(h, filters[2], strides[2], self.trainable_vars[task], self.train_phase[task], name='conv3_1_t%d'%(task), is_ATT_DATASET=self.is_ATT_DATASET)
+        h = _residual_block(h, self.trainable_vars[task], self.train_phase[task], apply_relu=False, name='conv3_2_t%d'%(task))
         # Add lateral connections
         for tt in range(task):
             U_w = weight_variable([1, 1, self.h_pnn[tt][2].get_shape().as_list()[-1], h.get_shape().as_list()[-1]], name='conv_3_w_t%d_tt%d'%(task, tt))
@@ -554,8 +556,8 @@ class Model:
         self.h_pnn[task].append(h)
 
         # Conv4_x
-        h = _residual_block_first(h, filters[3], strides[3], self.trainable_vars[task], self.train_phase, name='conv4_1_t%d'%(task), is_ATT_DATASET=self.is_ATT_DATASET)
-        h = _residual_block(h, self.trainable_vars[task], self.train_phase, apply_relu=False, name='conv4_2_t%d'%(task))
+        h = _residual_block_first(h, filters[3], strides[3], self.trainable_vars[task], self.train_phase[task], name='conv4_1_t%d'%(task), is_ATT_DATASET=self.is_ATT_DATASET)
+        h = _residual_block(h, self.trainable_vars[task], self.train_phase[task], apply_relu=False, name='conv4_2_t%d'%(task))
         # Add lateral connections
         for tt in range(task):
             U_w = weight_variable([1, 1, self.h_pnn[tt][3].get_shape().as_list()[-1], h.get_shape().as_list()[-1]], name='conv_4_w_t%d_tt%d'%(task, tt))
@@ -567,8 +569,8 @@ class Model:
         self.h_pnn[task].append(h)
 
         # Conv5_x
-        h = _residual_block_first(h, filters[4], strides[4], self.trainable_vars[task], self.train_phase, name='conv5_1_t%d'%(task), is_ATT_DATASET=self.is_ATT_DATASET)
-        h = _residual_block(h, self.trainable_vars[task], self.train_phase, apply_relu=False, name='conv5_2_t%d'%(task))
+        h = _residual_block_first(h, filters[4], strides[4], self.trainable_vars[task], self.train_phase[task], name='conv5_1_t%d'%(task), is_ATT_DATASET=self.is_ATT_DATASET)
+        h = _residual_block(h, self.trainable_vars[task], self.train_phase[task], apply_relu=False, name='conv5_2_t%d'%(task))
         # Add lateral connections
         for tt in range(task):
             U_w = weight_variable([1, 1, self.h_pnn[tt][4].get_shape().as_list()[-1], h.get_shape().as_list()[-1]], name='conv_5_w_t%d_tt%d'%(task, tt))
@@ -874,9 +876,7 @@ class Model:
             self.train = self.opt.apply_gradients(self.reg_gradients_vars)
         elif self.imp_method == 'PNN': 
             # Define training operation
-            self.train = []
-            for i in range(self.num_tasks):
-                self.train.append(self.opt.apply_gradients(self.reg_gradients_vars[i]))
+            self.train = [self.opt.apply_gradients(self.reg_gradients_vars[i]) for i in range(self.num_tasks)]
         elif self.imp_method == 'FTR_EXT':
             # Define a training operation for the first and subsequent tasks
             self.train = self.opt.apply_gradients(self.reg_gradients_vars)
