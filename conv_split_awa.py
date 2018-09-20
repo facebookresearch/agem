@@ -55,6 +55,7 @@ EPS_MEM_BATCH_SIZE = 128
 DEBUG_EPISODIC_MEMORY = False
 KEEP_EPISODIC_MEMORY_FULL = False
 K_FOR_CROSS_VAL = 3
+SHUFFLE_CLASSES = True
 
 ## Logging, saving and testing options
 LOG_DIR = './split_awa_results'
@@ -741,6 +742,10 @@ def main():
         class_label_offset = K_FOR_CROSS_VAL * classes_per_task
         label_array = np.arange(class_label_offset, total_classes+class_label_offset)
 
+    # Shuffle the classes
+    if SHUFFLE_CLASSES:
+        np.random.shuffle(label_array)
+
     for i in range(num_tasks):
         offset = i*classes_per_task
         task_labels.append(list(label_array[offset:offset+classes_per_task]))
@@ -752,7 +757,7 @@ def main():
         models_list = MODELS
         learning_rate_list = [0.1, 0.03, 0.01, 0.003, 0.0003]
     else:
-        models_list = MODELS
+        models_list = [args.imp_method]
     for imp_method in models_list:
         if imp_method == 'VAN':
             synap_stgth_list = [0]

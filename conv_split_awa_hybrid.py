@@ -54,6 +54,7 @@ EPS_MEM_BATCH_SIZE = 128
 DEBUG_EPISODIC_MEMORY = False
 KEEP_EPISODIC_MEMORY_FULL = False
 K_FOR_CROSS_VAL = 3
+SHUFFLE_CLASSES = True
 
 ## Logging, saving and testing options
 LOG_DIR = './split_awa_results'
@@ -766,6 +767,10 @@ def main():
         class_label_offset = K_FOR_CROSS_VAL * classes_per_task
         label_array = np.arange(class_label_offset, total_classes+class_label_offset)
 
+    # Shuffle classes
+    if SHUFFLE_CLASSES:
+        np.random.shuffle(label_array)
+
     for i in range(num_tasks):
         offset = i*classes_per_task
         task_labels.append(list(label_array[offset:offset+classes_per_task]))
@@ -776,13 +781,19 @@ def main():
         AWA_attr[K_FOR_CROSS_VAL*classes_per_task:] = 0
     else:
         AWA_attr[:K_FOR_CROSS_VAL*classes_per_task] = 0
-    print('Attributes: {}'.format(np.sum(AWA_attr, axis=1)))
+
+    if SHUFFLE_CLASSES:
+        AWA_shuffled_attr = np.zeros_like(AWA_attr)
+        label_array = np.append(np.arange(K_FOR_CROSS_VAL*classes_per_task), label_array)
+        AWA_shuffled_attr = AWA_attr[label_array]
+
+    print('Attributes: {}'.format(np.sum(AWA_shuffled_attr, axis=1)))
 
     if args.cross_validate_mode:
         models_list = MODELS
         learning_rate_list = [0.1, 0.03, 0.01, 0.001, 0.0003]
     else:
-        models_list = MODELS
+        models_list = [args.imp_method]
     for imp_method in models_list:
         if imp_method == 'VAN':
             synap_stgth_list = [0]
@@ -906,7 +917,7 @@ def main():
 
                     with tf.Session(config=config, graph=graph) as sess:
                         saver = tf.train.Saver(var_list=tf.global_variables(), max_to_keep=100)
-                        runs = train_task_sequence(model, sess, saver, datasets, AWA_attr, classes_per_task, task_labels, args.cross_validate_mode, 
+                        runs = train_task_sequence(model, sess, saver, datasets, AWA_shuffled_attr, classes_per_task, task_labels, args.cross_validate_mode, 
                                 args.train_single_epoch, args.eval_single_head, args.do_sampling, args.is_herding, args.mem_size*total_classes, args.train_iters, 
                                 args.batch_size, args.num_runs, args.init_checkpoint, args.online_cross_val)
                         # Close the session
