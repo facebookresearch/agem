@@ -7,3 +7,10 @@ The repo contains the code for the model:
 4) Gradient Episodic Memory (GEM) -> implementation not fully-tested
 5) Memory Aware Synapses (MAS)
 6) Riemannian Walk (RWALK)
+7) Progressive Neural Networks (PNN)
+8) Averaged Gradient Episodic Memory (S-GEM)
+
+
+Notes: 
+    * For AWA experiments, initialize the biases of last layers to '0' in utils/resnet_utils.py. 
+    * PNN implementation is in 'pnn' branch.

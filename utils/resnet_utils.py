@@ -37,7 +37,7 @@ def _fc(x, out_dim, var_list, name="fc"):
                 initializer=tf.random_uniform_initializer(-stdv, stdv))
                 #initializer=tf.truncated_normal_initializer(stddev=0.1))
         b = tf.get_variable('biases', [out_dim], tf.float32, initializer=tf.random_uniform_initializer(-stdv, stdv))
-        #b = tf.get_variable('biases', [out_dim], tf.float32, initializer=tf.constant_initializer(0.1))
+        #b = tf.get_variable('biases', [out_dim], tf.float32, initializer=tf.constant_initializer(0))
 
         # Append the variable to the trainable variables list
         var_list.append(w)

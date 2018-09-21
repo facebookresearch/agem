@@ -134,6 +134,8 @@ def get_arguments():
                        help="Number of training iterations for each task.")
     parser.add_argument("--batch-size", type=int, default=BATCH_SIZE,
                        help="Mini-batch size for each task.")
+    parser.add_argument("--random-seed", type=int, default=RANDOM_SEED,
+                       help="Random Seed.")
     parser.add_argument("--learning-rate", type=float, default=LEARNING_RATE,
                        help="Starting Learning rate for each task.")
     parser.add_argument("--optim", type=str, default=OPTIM,
@@ -225,6 +227,9 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, num_classes_pe
 
         # Mask for softmax
         logit_mask = np.zeros(TOTAL_CLASSES)
+
+        if model.imp_method == 'S-GEM':
+            prev_class_attrs = np.zeros_like(class_attr)
 
         # Compute the maximum size of batch dimension
         task_num_samples = []
@@ -324,7 +329,8 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, num_classes_pe
                     attr_offset = task * num_classes_per_task
                 else:
                     attr_offset = (task + K_FOR_CROSS_VAL) * num_classes_per_task
-                masked_class_attrs[attr_offset:attr_offset+num_classes_per_task] = class_attr[attr_offset:attr_offset+num_classes_per_task]
+                #masked_class_attrs[attr_offset:attr_offset+num_classes_per_task] = class_attr[attr_offset:attr_offset+num_classes_per_task]
+                masked_class_attrs[task_labels[task]] = class_attr[task_labels[task]]
 
             # Number of iterations after which convergence is checked
             convergence_iters = int(num_iters * MEASURE_CONVERGENCE_AFTER)
@@ -514,13 +520,17 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, num_classes_pe
             if model.imp_method == 'S-GEM':
                 # Update the previous task labels
                 prev_task_labels += task_labels[task]
-                prev_class_attrs = np.zeros_like(class_attr)
+                #prev_class_attrs = np.zeros_like(class_attr)
+                prev_class_attrs[prev_task_labels] = class_attr[prev_task_labels]
+
+                """
                 if online_cross_val:
                     prev_attr_offset = (task + 1) * num_classes_per_task
                     prev_class_attrs[:prev_attr_offset] = class_attr[:prev_attr_offset]
                 else:
                     prev_attr_offset = (task + 1 + K_FOR_CROSS_VAL) * num_classes_per_task
                     prev_class_attrs[(K_FOR_CROSS_VAL*num_classes_per_task):prev_attr_offset] = class_attr[(K_FOR_CROSS_VAL*num_classes_per_task):prev_attr_offset]
+                """
 
             if break_training:
                 break
@@ -642,6 +652,7 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, num_classes_pe
             elif train_single_epoch:
                 fbatch = test_task_sequence(model, sess, datasets, class_attr, num_classes_per_task, task_labels, False, eval_single_head=eval_single_head, test_labels=test_labels)
                 ftask[batch_dim_count] = fbatch
+                print('Task: {}, {}'.format(task, fbatch))
             else:
                 # Multi-epoch training, so compute accuracy at the end
                 ftask = test_task_sequence(model, sess, datasets, class_attr, num_classes_per_task, task_labels, online_cross_val, eval_single_head=eval_single_head, test_labels=test_labels)
@@ -676,10 +687,7 @@ def test_task_sequence(model, sess, test_data, class_attr, num_classes_per_task,
     """
     list_acc = []
 
-    if online_cross_val:
-        test_set = 'validation'
-    else:
-        test_set = 'test'
+    test_set = 'test'
 
     logit_mask = np.zeros(TOTAL_CLASSES)
     if eval_single_head:
@@ -694,38 +702,49 @@ def test_task_sequence(model, sess, test_data, class_attr, num_classes_per_task,
             logit_mask[:] = 0
             logit_mask[labels] = 1.0
             masked_class_attrs = np.zeros_like(class_attr)
+            """
             if online_cross_val:
                 attr_offset = task * num_classes_per_task
             else:
                 attr_offset = (task + K_FOR_CROSS_VAL) * num_classes_per_task
-            masked_class_attrs[attr_offset:attr_offset+num_classes_per_task] = class_attr[attr_offset:attr_offset+num_classes_per_task]
+            """
+            #masked_class_attrs[attr_offset:attr_offset+num_classes_per_task] = class_attr[attr_offset:attr_offset+num_classes_per_task]
+            masked_class_attrs[labels] = class_attr[labels]
     
-        task_test_images = test_data[task][test_set]['images']
-        task_test_labels = test_data[task][test_set]['labels']
-        total_test_samples = task_test_images.shape[0]
-        samples_at_a_time = 10
-        total_corrects = 0
-        for i in range(total_test_samples/ samples_at_a_time):
-            offset = i*samples_at_a_time
-            feed_dict = {model.x: task_test_images[offset:offset+samples_at_a_time], 
-                    model.y_: task_test_labels[offset:offset+samples_at_a_time],
+        task_images = test_data[task][test_set]['images']
+        task_labels = test_data[task][test_set]['labels']
+        global_class_indices = np.column_stack(np.nonzero(task_labels))
+        acc = np.zeros(len(labels))
+        for cli, cls in enumerate(labels):
+            class_indices = np.squeeze(global_class_indices[global_class_indices[:,1] == cls][:,np.array([True, False])])
+            class_indices = np.sort(class_indices, axis=None)
+            task_test_images = task_images[class_indices]
+            task_test_labels = task_labels[class_indices]
+            total_test_samples = task_test_images.shape[0]
+            samples_at_a_time = 10
+            total_corrects = 0
+            for i in range(total_test_samples/ samples_at_a_time):
+                offset = i*samples_at_a_time
+                feed_dict = {model.x: task_test_images[offset:offset+samples_at_a_time], 
+                        model.y_: task_test_labels[offset:offset+samples_at_a_time],
+                        model.class_attr: masked_class_attrs,
+                        model.keep_prob: 1.0, model.train_phase: False, model.output_mask: logit_mask}
+                corrects = sess.run(model.correct_predictions, feed_dict=feed_dict)
+                total_corrects += np.sum(corrects)
+            # Compute the corrects on residuals
+            offset = (i+1)*samples_at_a_time
+            num_residuals = total_test_samples % samples_at_a_time 
+            feed_dict = {model.x: task_test_images[offset:offset+num_residuals], 
+                    model.y_: task_test_labels[offset:offset+num_residuals], 
                     model.class_attr: masked_class_attrs,
                     model.keep_prob: 1.0, model.train_phase: False, model.output_mask: logit_mask}
             corrects = sess.run(model.correct_predictions, feed_dict=feed_dict)
             total_corrects += np.sum(corrects)
-        # Compute the corrects on residuals
-        offset = (i+1)*samples_at_a_time
-        num_residuals = total_test_samples % samples_at_a_time 
-        feed_dict = {model.x: task_test_images[offset:offset+num_residuals], 
-                model.y_: task_test_labels[offset:offset+num_residuals], 
-                model.class_attr: masked_class_attrs,
-                model.keep_prob: 1.0, model.train_phase: False, model.output_mask: logit_mask}
-        corrects = sess.run(model.correct_predictions, feed_dict=feed_dict)
-        total_corrects += np.sum(corrects)
+            if total_test_samples != 0:
+                # Mean accuracy on the task
+                acc[cli] = total_corrects/ float(total_test_samples)
 
-        # Mean accuracy on the task
-        acc = total_corrects/ float(total_test_samples)
-        list_acc.append(acc)
+        list_acc.append(np.mean(acc))
     
     return list_acc
 
@@ -736,6 +755,9 @@ def main():
 
     # Get the CL arguments
     args = get_arguments()
+    
+    # Initialize the random seed of numpy
+    np.random.seed(args.random_seed)
 
     # Check if the network architecture is valid
     if args.arch not in VALID_ARCHS:
@@ -771,6 +793,8 @@ def main():
     if SHUFFLE_CLASSES:
         np.random.shuffle(label_array)
 
+    print(label_array)
+
     for i in range(num_tasks):
         offset = i*classes_per_task
         task_labels.append(list(label_array[offset:offset+classes_per_task]))
@@ -782,12 +806,16 @@ def main():
     else:
         AWA_attr[:K_FOR_CROSS_VAL*classes_per_task] = 0
 
+    """
     if SHUFFLE_CLASSES:
         AWA_shuffled_attr = np.zeros_like(AWA_attr)
         label_array = np.append(np.arange(K_FOR_CROSS_VAL*classes_per_task), label_array)
+        print(label_array)
         AWA_shuffled_attr = AWA_attr[label_array]
 
     print('Attributes: {}'.format(np.sum(AWA_shuffled_attr, axis=1)))
+    """
+    print('Attributes: {}'.format(np.sum(AWA_attr, axis=1)))
 
     if args.cross_validate_mode:
         models_list = MODELS
@@ -878,7 +906,7 @@ def main():
                 with graph.as_default():
 
                     # Set the random seed
-                    tf.set_random_seed(RANDOM_SEED)
+                    tf.set_random_seed(args.random_seed)
 
                     # Define Input and Output of the model
                     x = tf.placeholder(tf.float32, shape=[None, IMG_HEIGHT, IMG_WIDTH, IMG_CHANNELS])
@@ -917,7 +945,7 @@ def main():
 
                     with tf.Session(config=config, graph=graph) as sess:
                         saver = tf.train.Saver(var_list=tf.global_variables(), max_to_keep=100)
-                        runs = train_task_sequence(model, sess, saver, datasets, AWA_shuffled_attr, classes_per_task, task_labels, args.cross_validate_mode, 
+                        runs = train_task_sequence(model, sess, saver, datasets, AWA_attr, classes_per_task, task_labels, args.cross_validate_mode, 
                                 args.train_single_epoch, args.eval_single_head, args.do_sampling, args.is_herding, args.mem_size*total_classes, args.train_iters, 
                                 args.batch_size, args.num_runs, args.init_checkpoint, args.online_cross_val)
                         # Close the session

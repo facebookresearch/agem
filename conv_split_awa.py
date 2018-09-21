@@ -131,6 +131,8 @@ def get_arguments():
                        help="Number of training iterations for each task.")
     parser.add_argument("--batch-size", type=int, default=BATCH_SIZE,
                        help="Mini-batch size for each task.")
+    parser.add_argument("--random-seed", type=int, default=RANDOM_SEED,
+                       help="Random Seed.")
     parser.add_argument("--learning-rate", type=float, default=LEARNING_RATE,
                        help="Starting Learning rate for each task.")
     parser.add_argument("--optim", type=str, default=OPTIM,
@@ -627,6 +629,7 @@ def train_task_sequence(model, sess, saver, datasets, task_labels, cross_validat
                     ftask = test_task_sequence(model, sess, datasets, task_labels, online_cross_val, eval_single_head=eval_single_head, test_labels=test_labels)
             elif train_single_epoch: 
                 fbatch = test_task_sequence(model, sess, datasets, task_labels, False, eval_single_head=eval_single_head, test_labels=test_labels)
+                print('Task: {} Acc: {}'.format(task, fbatch))
                 ftask[batch_dim_count] = fbatch 
             else:
                 # Multi-epoch training, so compute accuracy at the end
@@ -663,10 +666,7 @@ def test_task_sequence(model, sess, test_data, test_tasks, cross_validate_mode, 
     """
     list_acc = []
 
-    if cross_validate_mode:
-        test_set = 'validation'
-    else:
-        test_set = 'test'
+    test_set = 'test'
 
     logit_mask = np.zeros(TOTAL_CLASSES)
     if eval_single_head:
@@ -679,28 +679,36 @@ def test_task_sequence(model, sess, test_data, test_tasks, cross_validate_mode, 
             logit_mask[:] = 0
             logit_mask[labels] = 1.0
     
-        task_test_images = test_data[task][test_set]['images']
-        task_test_labels = test_data[task][test_set]['labels']
-        total_test_samples = task_test_images.shape[0]
-        samples_at_a_time = 10
-        total_corrects = 0
-        for i in range(total_test_samples/ samples_at_a_time):
-            offset = i*samples_at_a_time
-            feed_dict = {model.x: task_test_images[offset:offset+samples_at_a_time], 
-                    model.y_: task_test_labels[offset:offset+samples_at_a_time], 
+        task_images = test_data[task][test_set]['images']
+        task_labels = test_data[task][test_set]['labels']
+        global_class_indices = np.column_stack(np.nonzero(task_labels))
+        acc = np.zeros(len(labels))
+        for cli, cls in enumerate(labels):
+            class_indices = np.squeeze(global_class_indices[global_class_indices[:,1] == cls][:,np.array([True, False])])
+            class_indices = np.sort(class_indices, axis=None)
+            task_test_images = task_images[class_indices]
+            task_test_labels = task_labels[class_indices]
+            total_test_samples = task_test_images.shape[0]
+            samples_at_a_time = 10
+            total_corrects = 0
+            for i in range(total_test_samples/ samples_at_a_time):
+                offset = i*samples_at_a_time
+                feed_dict = {model.x: task_test_images[offset:offset+samples_at_a_time], 
+                        model.y_: task_test_labels[offset:offset+samples_at_a_time], 
+                        model.keep_prob: 1.0, model.train_phase: False, model.output_mask: logit_mask}
+                total_corrects += np.sum(sess.run(model.correct_predictions, feed_dict=feed_dict))
+            # Compute the corrects on residuals
+            offset = (i+1)*samples_at_a_time
+            num_residuals = total_test_samples % samples_at_a_time 
+            feed_dict = {model.x: task_test_images[offset:offset+num_residuals], 
+                    model.y_: task_test_labels[offset:offset+num_residuals], 
                     model.keep_prob: 1.0, model.train_phase: False, model.output_mask: logit_mask}
             total_corrects += np.sum(sess.run(model.correct_predictions, feed_dict=feed_dict))
-        # Compute the corrects on residuals
-        offset = (i+1)*samples_at_a_time
-        num_residuals = total_test_samples % samples_at_a_time 
-        feed_dict = {model.x: task_test_images[offset:offset+num_residuals], 
-                model.y_: task_test_labels[offset:offset+num_residuals], 
-                model.keep_prob: 1.0, model.train_phase: False, model.output_mask: logit_mask}
-        total_corrects += np.sum(sess.run(model.correct_predictions, feed_dict=feed_dict))
 
-        # Mean accuracy on the task
-        acc = total_corrects/ float(total_test_samples)
-        list_acc.append(acc)
+            # Mean accuracy on the task
+            acc[cli] = total_corrects/ float(total_test_samples)
+
+        list_acc.append(np.mean(acc))
     
     return list_acc
 
@@ -708,9 +716,12 @@ def main():
     """
     Create the model and start the training
     """
-
+    
     # Get the CL arguments
     args = get_arguments()
+
+    # Initialize the random seed of numpy
+    np.random.seed(args.random_seed)
 
     # Check if the network architecture is valid
     if args.arch not in VALID_ARCHS:
@@ -746,6 +757,7 @@ def main():
     if SHUFFLE_CLASSES:
         np.random.shuffle(label_array)
 
+    print(label_array)
     for i in range(num_tasks):
         offset = i*classes_per_task
         task_labels.append(list(label_array[offset:offset+classes_per_task]))
@@ -841,7 +853,7 @@ def main():
                 with graph.as_default():
 
                     # Set the random seed
-                    tf.set_random_seed(RANDOM_SEED)
+                    tf.set_random_seed(args.random_seed)
 
                     # Define Input and Output of the model
                     x = tf.placeholder(tf.float32, shape=[None, IMG_HEIGHT, IMG_WIDTH, IMG_CHANNELS])
