@@ -189,14 +189,17 @@ class Model:
             strides = [1, 0, 2, 2, 2]
             if self.imp_method == 'PNN':
                 self.task_logits = []
+                self.task_pruned_logits = []
                 self.unweighted_entropy = []
                 for i in range(self.num_tasks):
                     if i == 0:
                         self.task_logits.append(self.init_resent_column_progNN(x, kernels, filters, strides))
-                        self.unweighted_entropy.append(tf.squeeze(tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=y_[i], logits=self.task_logits[i]))))
+                        self.task_pruned_logits.append(tf.where(tf.tile(tf.equal(self.output_mask[i][None,:], 1.0), [tf.shape(self.task_logits[i])[0], 1]), self.task_logits[i], NEG_INF*tf.ones_like(self.task_logits[i])))
+                        self.unweighted_entropy.append(tf.squeeze(tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=y_[i], logits=self.task_pruned_logits[i]))))
                     else:
-                       self.task_logits.append(self.extensible_resnet_column_progNN(x, kernels, filters, strides, i))
-                       self.unweighted_entropy.append(tf.squeeze(tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=y_[i], logits=self.task_logits[i]))))
+                        self.task_logits.append(self.extensible_resnet_column_progNN(x, kernels, filters, strides, i))
+                        self.task_pruned_logits.append(tf.where(tf.tile(tf.equal(self.output_mask[i][None,:], 1.0), [tf.shape(self.task_logits[i])[0], 1]), self.task_logits[i], NEG_INF*tf.ones_like(self.task_logits[i])))
+                        self.unweighted_entropy.append(tf.squeeze(tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=y_[i], logits=self.task_pruned_logits[i]))))
             else:
                 logits = self.resnet18_conv_feedforward(x, kernels, filters, strides)
 
@@ -209,11 +212,8 @@ class Model:
 
         # Prune the predictions to only include the classes for which
         # the training data is present
-        if self.imp_method == 'PNN':
-            self.task_pruned_logits = [tf.where(tf.tile(tf.equal(self.output_mask[i][None,:], 1.0), [tf.shape(self.task_logits[i])[0], 1]), self.task_logits[i], NEG_INF*tf.ones_like(self.task_logits[i])) for i in range(self.num_tasks)]
-        else:
-            self.pruned_logits = tf.where(tf.tile(tf.equal(self.output_mask[None,:], 1.0), 
-                [tf.shape(logits)[0], 1]), logits, NEG_INF*tf.ones_like(logits))
+        if self.imp_method != 'PNN':
+            self.pruned_logits = tf.where(tf.tile(tf.equal(self.output_mask[None,:], 1.0), [tf.shape(logits)[0], 1]), logits, NEG_INF*tf.ones_like(logits))
 
         # Create list of variables for storing different measures
         # Note: This method has to be called before calculating fisher 
