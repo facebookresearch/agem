@@ -125,13 +125,13 @@ def _AWA_get_data(data_dir, train_list_file, val_list_file, test_list_file, img_
 
     # Read train, validation and test files
     train_img, train_label = _AWA_read_img_from_file(data_dir, train_list_file, img_height, img_width)
-    validation_img, validation_label = _AWA_read_img_from_file(data_dir, val_list_file, img_height, img_width)
+    #validation_img, validation_label = _AWA_read_img_from_file(data_dir, val_list_file, img_height, img_width)
     test_img, test_label = _AWA_read_img_from_file(data_dir, test_list_file, img_height, img_width)
 
     dataset['train'].append(train_img)
     dataset['train'].append(train_label)
-    dataset['validation'].append(validation_img)
-    dataset['validation'].append(validation_label)
+    #dataset['validation'].append(validation_img)
+    #dataset['validation'].append(validation_label)
     dataset['test'].append(test_img)
     dataset['test'].append(test_label)
 
@@ -165,7 +165,8 @@ def construct_split_awa(task_labels, data_dir, train_list_file, val_list_file, t
     datasets = []
 
     # Data splits
-    sets = ["train", "validation", "test"]
+    #sets = ["train", "validation", "test"]
+    sets = ["train", "test"]
 
     for task in task_labels:
 
@@ -205,7 +206,7 @@ def construct_split_awa(task_labels, data_dir, train_list_file, val_list_file, t
 
         awa = {
             'train': train,
-            'validation': validation,
+            #'validation': validation,
             'test': test,
         }
 

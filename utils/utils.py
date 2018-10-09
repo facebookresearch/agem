@@ -52,6 +52,45 @@ def create_conv_layer(input, w, b, stride=1, apply_relu=True):
 
     return output
 
+def load_task_specific_data_in_proportion(datasets, task_labels, classes_appearing_in_tasks, class_seen_already):
+    """
+    Loads task specific data from the datasets proportionate to classes appearing in different tasks
+    """
+    global_class_indices = np.column_stack(np.nonzero(datasets['labels']))
+    count = 0
+    for cls in task_labels:
+        if count == 0:
+            class_indices = np.squeeze(global_class_indices[global_class_indices[:,1] == cls][:,np.array([True, False])])
+            total_class_instances = class_indices.size
+            num_instances_to_choose = total_class_instances // classes_appearing_in_tasks[cls]
+            offset = (class_seen_already[cls] - 1) * num_instances_to_choose
+            final_class_indices = class_indices[offset: offset+num_instances_to_choose]
+        else:
+            current_class_indices = np.squeeze(global_class_indices[global_class_indices[:,1] == cls][:,np.array([True, False])])
+            total_class_instances = current_class_indices.size
+            num_instances_to_choose = total_class_instances // classes_appearing_in_tasks[cls]
+            offset = (class_seen_already[cls] - 1) * num_instances_to_choose
+            final_class_indices = np.append(final_class_indices, current_class_indices[offset: offset+num_instances_to_choose])
+        count += 1
+    final_class_indices = np.sort(final_class_indices, axis=None)
+    return datasets['images'][final_class_indices, :], datasets['labels'][final_class_indices, :]
+
+
+def load_task_specific_data(datasets, task_labels):
+    """
+    Loads task specific data from the datasets
+    """
+    global_class_indices = np.column_stack(np.nonzero(datasets['labels']))
+    count = 0
+    for cls in task_labels:
+        if count == 0:
+            class_indices = np.squeeze(global_class_indices[global_class_indices[:,1] == cls][:,np.array([True, False])])
+        else:
+            class_indices = np.append(class_indices, np.squeeze(global_class_indices[global_class_indices[:,1] == cls][:,np.array([True, False])]))
+        count += 1
+    class_indices = np.sort(class_indices, axis=None)
+    return datasets['images'][class_indices, :], datasets['labels'][class_indices, :]
+
 def samples_for_each_class(dataset_labels, task):
     """
     Numbers of samples for each class in the task
@@ -198,6 +237,7 @@ def sample_from_dataset(dataset, importance_array, task, samples_count, preds=No
         label_importance /= np.sum(label_importance)
 
         actual_samples_count = min(samples_count, np.count_nonzero(label_importance))
+        #print('Storing {} samples from {} class'.format(actual_samples_count, label))
 
         # If no samples are correctly classified then skip saving the samples
         if (actual_samples_count != 0):

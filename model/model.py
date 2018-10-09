@@ -1182,7 +1182,7 @@ class Model:
         grads = tf.gradients(self.unweighted_entropy, self.trainable_vars)
         # Reference gradient for previous tasks
         self.store_ref_grads = [tf.assign(ref, grad) for ref, grad in zip(self.ref_grads, grads)]
-        # TODO: Comment the line above and uncomment the lines below if want to use an average gradient over the whole episodic memory for AWA and CUB! To Slow!!
+        # TODO: Comment the line above and uncomment the lines below if want to use an average gradient over the whole episodic memory for AWA and CUB! Too Slow!!
         """
         self.store_ref_grads = [tf.assign_add(ref, grad) for ref, grad in zip(self.ref_grads, grads)]
         self.average_ref_grads = [tf.assign(grad, grad*(1.0/ self.store_grad_batches)) for grad in self.ref_grads]
