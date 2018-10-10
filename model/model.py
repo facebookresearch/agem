@@ -1344,11 +1344,7 @@ class Model:
             if self.class_attr is not None:
                 # Define mask based on the class attributes
                 masked_class_attrs = np.zeros_like(class_attr)
-                if online_cross_val:
-                    attr_offset = task * num_classes_per_task
-                else:
-                    attr_offset = (task + 3) * num_classes_per_task #TODO: Fix this hard-coded 3. Read from K_FOR_CROSS_VAL instead
-                masked_class_attrs[attr_offset:attr_offset+num_classes_per_task] = class_attr[attr_offset:attr_offset+num_classes_per_task]
+                masked_class_attrs[train_labels] = class_attr[train_labels]
             # Logits mask
             logit_mask = np.zeros(self.total_classes)
             logit_mask[train_labels] = 1.0

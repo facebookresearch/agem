@@ -8,6 +8,7 @@ import os
 import sys
 import math
 import random
+import time 
 
 import datetime
 import numpy as np
@@ -241,6 +242,7 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, num_classes_pe
             episodic_filled_counter = 0
             # Labels for all the tasks that we have seen in the past
             prev_task_labels = []
+            prev_class_attrs = np.zeros([model.total_classes, class_attr.shape[1]])
 
         if do_sampling:
             # List to store important samples from the previous tasks
@@ -249,9 +251,6 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, num_classes_pe
 
         # Mask for softmax
         logit_mask = np.zeros(model.total_classes)
-
-        if model.imp_method == 'S-GEM':
-            prev_class_attrs = np.zeros([model.total_classes, class_attr.shape[1]])
 
         max_batch_dimension = 500
 
@@ -867,6 +866,7 @@ def main():
                     config = tf.ConfigProto()
                     config.gpu_options.allow_growth = True
 
+                    time_start = time.time()
                     with tf.Session(config=config, graph=graph) as sess:
                         saver = tf.train.Saver(var_list=tf.global_variables(), max_to_keep=100)
                         runs = train_task_sequence(model, sess, saver, datasets, AWA_attr, CLASSES_PER_TASK, args.cross_validate_mode, 
@@ -874,6 +874,9 @@ def main():
                                 args.batch_size, args.num_runs, args.init_checkpoint, args.online_cross_val, args.random_seed)
                         # Close the session
                         sess.close()
+                    time_end = time.time()
+                    time_spent = time_end - time_start
+                    print('Time spent: {}'.format(time_spent))
 
                 # Clean up
                 del model

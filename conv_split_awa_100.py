@@ -8,6 +8,7 @@ import os
 import sys
 import math
 import random
+import time
 
 import datetime
 import numpy as np
@@ -848,12 +849,16 @@ def main():
                     config = tf.ConfigProto()
                     config.gpu_options.allow_growth = True
 
+                    time_start = time.time() 
                     with tf.Session(config=config, graph=graph) as sess:
                         saver = tf.train.Saver(var_list=tf.global_variables(), max_to_keep=100)
                         runs = train_task_sequence(model, sess, saver, datasets, args.cross_validate_mode, args.train_single_epoch, args.eval_single_head, 
                                 args.do_sampling, args.is_herding, args.mem_size*CLASSES_PER_TASK*num_tasks, args.train_iters, args.batch_size, args.num_runs, args.init_checkpoint, args.online_cross_val, args.random_seed)
                         # Close the session
                         sess.close()
+                    time_end = time.time()
+                    time_spent = time_end - time_start
+                    print('Time spent: {}'.format(time_spent))
 
                 # Clean up
                 del model

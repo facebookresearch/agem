@@ -91,6 +91,8 @@ def get_arguments():
                        help="Number of training iterations for each task.")
     parser.add_argument("--batch-size", type=int, default=BATCH_SIZE,
                        help="Mini-batch size for each task.")
+    parser.add_argument("--random-seed", type=int, default=RANDOM_SEED,
+                        help="Random Seed.")
     parser.add_argument("--learning-rate", type=float, default=LEARNING_RATE,
                        help="Starting Learning rate for each task.")
     parser.add_argument("--optim", type=str, default=OPTIM,
@@ -115,8 +117,8 @@ def get_arguments():
                        help="Directory where the plots and model accuracies will be stored.")
     return parser.parse_args()
 
-def train_task_sequence(model, sess, datasets, cross_validate_mode, train_single_epoch, eval_single_head, do_sampling, is_herding, 
-        episodic_mem_size, train_iters, batch_size, num_runs, online_cross_val):
+def train_task_sequence(model, sess, cross_validate_mode, train_single_epoch, eval_single_head, do_sampling, is_herding, 
+        mem_per_class, train_iters, batch_size, num_runs, online_cross_val, random_seed):
     """
     Train and evaluate LLL system such that we only see a example once
     Args:
@@ -129,6 +131,20 @@ def train_task_sequence(model, sess, datasets, cross_validate_mode, train_single
     # Loop over number of runs to average over
     for runid in range(num_runs):
         print('\t\tRun %d:'%(runid))
+
+        # Initialize the random seeds
+        np.random.seed(random_seed+runid)
+
+        # Load the permute mnist dataset
+        full_datasets = construct_permute_mnist(model.num_tasks)
+
+        # Get the subset of data depending on training or cross-validation mode
+        if online_cross_val:
+            datasets = full_datasets[:K_FOR_CROSS_VAL]
+        else:
+            datasets = full_datasets[K_FOR_CROSS_VAL:]
+
+        episodic_mem_size = mem_per_class*model.num_tasks*TOTAL_CLASSES
 
         # Initialize all the variables in the model
         sess.run(tf.global_variables_initializer())
@@ -478,7 +494,7 @@ def test_task_sequence(model, sess, test_data, cross_validate_mode, eval_single_
         return np.zeros(model.num_tasks)
 
     list_acc = []
-    if mode.imp_method == 'PNN':
+    if model.imp_method == 'PNN':
         pnn_logit_mask = np.ones([model.num_tasks, TOTAL_CLASSES])
     else:
         logit_mask = np.ones(TOTAL_CLASSES)
@@ -557,15 +573,10 @@ def main():
             str(args.batch_size), args.do_sampling, str(args.mem_size)) + datetime.datetime.now().strftime("%y-%m-%d-%H-%M")
     snapshot_experiment_meta_data(args.log_dir, experiment_id, exper_meta_data)
 
-    # Load the permute mnist dataset
-    datasets = construct_permute_mnist(NUM_TASKS)
-
     # Get the subset of data depending on training or cross-validation mode
     if args.online_cross_val:
-        sub_datasets = datasets[:K_FOR_CROSS_VAL]
         num_tasks = K_FOR_CROSS_VAL
     else:
-        sub_datasets = datasets[K_FOR_CROSS_VAL:]
         num_tasks = NUM_TASKS - K_FOR_CROSS_VAL
 
     # Variables to store the accuracies and standard deviations of the experiment
@@ -617,8 +628,8 @@ def main():
 
         time_start = time.time()
         with tf.Session(config=config, graph=graph) as sess:
-            runs = train_task_sequence(model, sess, sub_datasets, args.cross_validate_mode, args.train_single_epoch, args.eval_single_head, 
-                    args.do_sampling, args.is_herding, args.mem_size*TOTAL_CLASSES*num_tasks, args.train_iters, args.batch_size, args.num_runs, args.online_cross_val)
+            runs = train_task_sequence(model, sess, args.cross_validate_mode, args.train_single_epoch, args.eval_single_head, 
+                    args.do_sampling, args.is_herding, args.mem_size, args.train_iters, args.batch_size, args.num_runs, args.online_cross_val, args.random_seed)
             # Close the session
             sess.close()
         time_end = time.time()
