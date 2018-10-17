@@ -502,7 +502,7 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, num_classes_pe
 
             if model.imp_method == 'S-GEM':
                 # Update the previous task labels
-                prev_task_labels += classes_adjusted_for_head
+                prev_task_labels.extend(classes_adjusted_for_head)
                 prev_class_attrs[classes_adjusted_for_head] = class_attr[task_labels[task]]
 
             if break_training:
