@@ -250,9 +250,13 @@ def train_task_sequence(model, sess, saver, datasets, cross_validate_mode, train
                 model.restore(sess)
 
             # If sampling flag is set append the previous datasets
-            if(do_sampling and task > 0):
-                task_images, task_labels = load_task_specific_data(datasets[0]['train'], task_labels[task])
-                task_train_images, task_train_labels = concatenate_datasets(task_images, task_labels, last_task_x, last_task_y_)
+            if do_sampling:
+                task_tr_images, task_tr_labels = load_task_specific_data(datasets[0]['train'], task_labels[task])
+                if task > 0:
+                    task_train_images, task_train_labels = concatenate_datasets(task_tr_images, task_tr_labels, last_task_x, last_task_y_)
+                else:
+                    task_train_images = task_tr_images
+                    task_train_labels = task_tr_labels
             else:
                 # Extract training images and labels for the current task
                 task_train_images, task_train_labels = load_task_specific_data(datasets[0]['train'], task_labels[task])
@@ -582,8 +586,8 @@ def train_task_sequence(model, sess, saver, datasets, cross_validate_mode, train
                     importance_array = np.ones([task_train_images.shape[0]], dtype=np.float32)
                     # Get the important samples from the current task
                     task_data = {
-                            'images': task_train_images,
-                            'labels': task_train_labels,
+                            'images': task_tr_images,
+                            'labels': task_tr_labels,
                             }
                     imp_images, imp_labels = sample_from_dataset(task_data, importance_array, task_labels[task], SAMPLES_PER_CLASS)
 

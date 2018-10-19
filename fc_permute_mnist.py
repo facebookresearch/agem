@@ -136,13 +136,7 @@ def train_task_sequence(model, sess, cross_validate_mode, train_single_epoch, ev
         np.random.seed(random_seed+runid)
 
         # Load the permute mnist dataset
-        full_datasets = construct_permute_mnist(model.num_tasks)
-
-        # Get the subset of data depending on training or cross-validation mode
-        if online_cross_val:
-            datasets = full_datasets[:K_FOR_CROSS_VAL]
-        else:
-            datasets = full_datasets[K_FOR_CROSS_VAL:]
+        datasets = construct_permute_mnist(model.num_tasks)
 
         episodic_mem_size = mem_per_class*model.num_tasks*TOTAL_CLASSES
 
@@ -156,7 +150,7 @@ def train_task_sequence(model, sess, cross_validate_mode, train_single_epoch, ev
         evals = []
 
         # List to store the classes that we have so far - used at test time
-        test_labels = []
+        test_labels = np.arange(TOTAL_CLASSES)
 
         if model.imp_method == 'GEM' or model.imp_method == 'M-GEM':
             # List to store the episodic memories of the previous tasks
@@ -381,7 +375,7 @@ def train_task_sequence(model, sess, cross_validate_mode, train_single_epoch, ev
 
             # Compute the inter-task updates, Fisher/ importance scores etc
             # Don't calculate the task updates for the last task
-            if task < len(datasets) - 1 or MEASURE_PERF_ON_EPS_MEMORY:
+            if (task < (len(datasets) - 1)) or MEASURE_PERF_ON_EPS_MEMORY:
                 model.task_updates(sess, task, task_train_images, np.arange(TOTAL_CLASSES))
                 print('\t\t\t\tTask updates after Task%d done!'%(task))
 
@@ -453,6 +447,27 @@ def train_task_sequence(model, sess, cross_validate_mode, train_single_epoch, ev
                             # Is there any space which is not filled
                             print('Empty space: {}'.format(np.where(np.sum(episodic_labels, axis=1) == 0)))
                         print('Episodic memory of {} images at task {} saved!'.format(episodic_images.shape[0], task))
+
+                # If sampling flag is set, store few of the samples from previous task
+                if do_sampling:
+                    # Do the uniform sampling/ only get examples from current task
+                    importance_array = np.ones([datasets[task]['train']['images'].shape[0]], dtype=np.float32)
+                    # Get the important samples from the current task
+                    imp_images, imp_labels = sample_from_dataset(datasets[task]['train'], importance_array, 
+                            np.arange(TOTAL_CLASSES), SAMPLES_PER_CLASS)
+
+                    if imp_images is not None:
+                        if last_task_x is None:
+                            last_task_x = imp_images
+                            last_task_y_ = imp_labels
+                        else:
+                            last_task_x = np.concatenate((last_task_x, imp_images), axis=0)
+                            last_task_y_ = np.concatenate((last_task_y_, imp_labels), axis=0)
+
+                    # Delete the importance array now that you don't need it in the current run
+                    del importance_array
+
+                    print('\t\t\t\tEpisodic memory of {} is saved for Task {}!'.format(imp_labels.shape[0], task))
 
             if train_single_epoch and not cross_validate_mode: 
                 fbatch = test_task_sequence(model, sess, datasets, False, eval_single_head=eval_single_head)

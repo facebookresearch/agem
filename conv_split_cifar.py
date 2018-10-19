@@ -236,8 +236,8 @@ def train_task_sequence(model, sess, datasets, cross_validate_mode, train_single
 
             # If sampling flag is set append the previous datasets
             if(do_sampling and task > 0):
-                task_images, task_labels = load_task_specific_data(datasets[0]['train'], task_labels[task])
-                task_train_images, task_train_labels = concatenate_datasets(task_images, task_labels, last_task_x, last_task_y_)
+                task_tr_images, task_tr_labels = load_task_specific_data(datasets[0]['train'], task_labels[task])
+                task_train_images, task_train_labels = concatenate_datasets(task_tr_images, task_tr_labels, last_task_x, last_task_y_)
             else:
                 if online_cross_val:
                     # Extract training images and labels for the current task
@@ -602,8 +602,8 @@ def train_task_sequence(model, sess, datasets, cross_validate_mode, train_single
                     importance_array = np.ones([task_train_images.shape[0]], dtype=np.float32)
                     # Get the important samples from the current task
                     task_data = {
-                            'images': task_train_images,
-                            'labels': task_train_labels,
+                            'images': task_tr_images,
+                            'labels': task_tr_labels,
                             }
                     imp_images, imp_labels = sample_from_dataset(task_data, importance_array, 
                             task_labels[task], SAMPLES_PER_CLASS)
@@ -619,7 +619,7 @@ def train_task_sequence(model, sess, datasets, cross_validate_mode, train_single
                     # Delete the importance array now that you don't need it in the current run
                     del importance_array
 
-                    print('\t\t\t\tEpisodic memory is saved for Task%d!'%(task))
+                    print('\t\t\t\tTask: {}, Episodic Memory: {}!'.format(task, imp_labels.shape[0]))
 
             if VISUALIZE_IMPORTANCE_MEASURE:
                 if runid == 0:
