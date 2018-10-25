@@ -152,14 +152,17 @@ class Model:
             layer_dims = [input_dim, 256, 256, self.total_classes]
             if self.imp_method == 'PNN':
                 self.task_logits = []
+                self.task_pruned_logits = []
                 self.unweighted_entropy = []
                 for i in range(self.num_tasks):
                     if i == 0:
                         self.task_logits.append(self.init_fc_column_progNN(layer_dims, x))
-                        self.unweighted_entropy.append(tf.squeeze(tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=y_[i], logits=self.task_logits[i])))) # mult by mean(y_[i]) puts unwaranted loss to 0
+                        self.task_pruned_logits.append(tf.where(tf.tile(tf.equal(self.output_mask[i][None,:], 1.0), [tf.shape(self.task_logits[i])[0], 1]), self.task_logits[i], NEG_INF*tf.ones_like(self.task_logits[i])))
+                        self.unweighted_entropy.append(tf.squeeze(tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=y_[i], logits=self.task_pruned_logits[i])))) # mult by mean(y_[i]) puts unwaranted loss to 0
                     else:
                         self.task_logits.append(self.extensible_fc_column_progNN(layer_dims, x, i))
-                        self.unweighted_entropy.append(tf.squeeze(tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=y_[i], logits=self.task_logits[i])))) # mult by mean(y_[i]) puts unwaranted loss to 0
+                        self.task_pruned_logits.append(tf.where(tf.tile(tf.equal(self.output_mask[i][None,:], 1.0), [tf.shape(self.task_logits[i])[0], 1]), self.task_logits[i], NEG_INF*tf.ones_like(self.task_logits[i])))
+                        self.unweighted_entropy.append(tf.squeeze(tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=y_[i], logits=self.task_pruned_logits[i])))) # mult by mean(y_[i]) puts unwaranted loss to 0
             else:
                 self.fc_variables(layer_dims)
                 logits = self.fc_feedforward(x, self.weights, self.biases)

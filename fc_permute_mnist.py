@@ -171,6 +171,7 @@ def train_task_sequence(model, sess, cross_validate_mode, train_single_epoch, ev
         # Since all the classes are present in all the tasks so nothing to mask
         logit_mask = np.ones(TOTAL_CLASSES)
         if model.imp_method == 'PNN':
+            pnn_train_phase = np.array(np.zeros(model.num_tasks), dtype=np.bool)
             pnn_logit_mask = np.ones([model.num_tasks, TOTAL_CLASSES])
 
         if COUNT_VIOLATIONS:
@@ -244,11 +245,14 @@ def train_task_sequence(model, sess, cross_validate_mode, train_single_epoch, ev
                 offset = (iters * batch_size) % (num_train_examples - batch_size)
 
                 if model.imp_method == 'PNN':
+                    pnn_train_phase[:] = False
+                    pnn_train_phase[task] = True
                     feed_dict = {model.x: train_x[offset:offset+batch_size], model.y_[task]: train_y[offset:offset+batch_size], 
                             model.sample_weights: task_sample_weights[offset:offset+batch_size],
-                            model.training_iters: num_iters, model.train_step: iters, model.keep_prob: 1.0, 
-                            model.output_mask: logit_mask, model.train_phase: True}
+                            model.training_iters: num_iters, model.train_step: iters, model.keep_prob: 1.0}
+                    train_phase_dict = {m_t: i_t for (m_t, i_t) in zip(model.train_phase, pnn_train_phase)}
                     logit_mask_dict = {m_t: i_t for (m_t, i_t) in zip(model.output_mask, pnn_logit_mask)}
+                    feed_dict.update(train_phase_dict)
                     feed_dict.update(logit_mask_dict)
                 else:
                     feed_dict = {model.x: train_x[offset:offset+batch_size], model.y_: train_y[offset:offset+batch_size], 
@@ -528,10 +532,12 @@ def test_task_sequence(model, sess, test_data, cross_validate_mode, eval_single_
     for task, _ in enumerate(test_data):
 
         if model.imp_method == 'PNN':
+            pnn_train_phase = np.array(np.zeros(model.num_tasks), dtype=np.bool)
             feed_dict = {model.x: test_data[task]['test']['images'], 
-                    model.y_[task]: test_data[task]['test']['labels'], model.keep_prob: 1.0, 
-                    model.output_mask: logit_mask, model.train_phase: False}
+                    model.y_[task]: test_data[task]['test']['labels'], model.keep_prob: 1.0}
+            train_phase_dict = {m_t: i_t for (m_t, i_t) in zip(model.train_phase, pnn_train_phase)}
             logit_mask_dict = {m_t: i_t for (m_t, i_t) in zip(model.output_mask, pnn_logit_mask)}
+            feed_dict.update(train_phase_dict)
             feed_dict.update(logit_mask_dict)
             acc = model.accuracy[task].eval(feed_dict = feed_dict)
         else:

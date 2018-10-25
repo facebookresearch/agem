@@ -255,7 +255,7 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, classes_per_ta
                 model.restore(sess)
 
             # If sampling flag is set append the previous datasets
-            if dtaso_sampling:
+            if do_sampling:
                 task_tr_images, task_tr_labels = load_task_specific_data(datasets[0]['train'], task_labels[task])
                 if task > 0:
                     task_train_images, task_train_labels = concatenate_datasets(task_tr_images, task_tr_labels, last_task_x, last_task_y_)
