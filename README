@@ -10,7 +10,4 @@ The repo contains the code for the model:
 7) Progressive Neural Networks (PNN)
 8) Averaged Gradient Episodic Memory (S-GEM)
 
-
-Notes: 
-    * For AWA experiments, initialize the biases of last layers to '0' in utils/resnet_utils.py. 
-    * PNN implementation is in 'pnn' branch.
+$ replicate_results.sh <DATASET> 

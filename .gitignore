@@ -13,7 +13,7 @@
 *resnet-18-pretrained*
 *_experiment*
 .nfs*
-*results*
+results*
 cross_validate_*
 importance_vis*
 *.pickle
