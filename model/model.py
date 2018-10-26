@@ -259,7 +259,7 @@ class Model:
             self.create_hebbian_ops()
         elif self.imp_method == 'GEM':
             self.create_gem_ops()
-        elif self.imp_method == 'S-GEM' or self.imp_method == 'M-GEM':
+        elif self.imp_method == 'A-GEM' or self.imp_method == 'S-GEM':
             self.create_stochastic_gem_ops()
 
         if self.imp_method != 'PNN':
@@ -336,7 +336,10 @@ class Model:
 
         # if self.hybrid then store the weights for the ONE-HOT head as well!
         if self.hybrid:
-            ohot_logits = _fc(phi_x, self.total_classes, self.trainable_vars, name='fc_1')
+            if self.network_arch == 'RESNET-S':
+                ohot_logits = _fc(phi_x, self.total_classes, self.trainable_vars, name='fc_1', is_cifar=True)
+            else:
+                ohot_logits = _fc(phi_x, self.total_classes, self.trainable_vars, name='fc_1')
 
         # Now that we have all the trainable variables, initialize the different book keeping variables
         # Note: This method has to be called before calculating fisher 
@@ -389,7 +392,7 @@ class Model:
             self.create_hebbian_ops()
         elif self.imp_method == 'GEM':
             self.create_gem_ops()
-        elif (self.imp_method == 'S-GEM') or (self.imp_method == 'M-GEM'):
+        elif (self.imp_method == 'A-GEM') or (self.imp_method == 'S-GEM'):
             self.create_stochastic_gem_ops()
 
         # Create weight save and store ops
@@ -509,7 +512,10 @@ class Model:
         # Apply average pooling
         h = tf.reduce_mean(h, [1, 2])
 
-        logits = _fc(h, self.total_classes, self.trainable_vars[0], name='fc_1_t0')
+        if self.network_arch == 'RESNET-S':
+            logits = _fc(h, self.total_classes, self.trainable_vars[0], name='fc_1_t0', is_cifar=True)
+        else:
+            logits = _fc(h, self.total_classes, self.trainable_vars[0], name='fc_1_t0')
         self.h_pnn[0].append(logits)
         
         return logits
@@ -590,7 +596,10 @@ class Model:
         # Apply average pooling
         h = tf.reduce_mean(h, [1, 2])
 
-        logits = _fc(h, self.total_classes, self.trainable_vars[task], name='fc_1_t%d'%(task))
+        if self.network_arch == 'RESNET-S':
+            logits = _fc(h, self.total_classes, self.trainable_vars[task], name='fc_1_t%d'%(task), is_cifar=True)
+        else:
+            logits = _fc(h, self.total_classes, self.trainable_vars[task], name='fc_1_t%d'%(task))
         for tt in range(task):
             h_tt = tf.reduce_mean(self.h_pnn[tt][5], [1, 2])
             U_w = weight_variable([h_tt.get_shape().as_list()[1], self.total_classes], name='fc_uw_1_t%d_tt%d'%(task, tt))
@@ -806,7 +815,10 @@ class Model:
             # Return the image features
             return h
         else:
-            logits = _fc(h, self.total_classes, self.trainable_vars, name='fc_1')
+            if self.network_arch == 'RESNET-S':
+                logits = _fc(h, self.total_classes, self.trainable_vars, name='fc_1', is_cifar=True)
+            else:
+                logits = _fc(h, self.total_classes, self.trainable_vars, name='fc_1')
             return logits
 
 
@@ -936,7 +948,7 @@ class Model:
                 self.hebbian_score_vars.append(tf.Variable(tf.zeros(self.trainable_vars[v].get_shape()), trainable=False))
             elif self.imp_method == 'GEM': 
                 self.projected_gradients_list.append(tf.Variable(tf.zeros(self.trainable_vars[v].get_shape()), trainable=False))
-            elif self.imp_method == 'S-GEM' or self.imp_method == 'M-GEM':
+            elif self.imp_method == 'A-GEM' or self.imp_method == 'S-GEM':
                 self.ref_grads.append(tf.Variable(tf.zeros(self.trainable_vars[v].get_shape()), trainable=False))
                 self.projected_gradients_list.append(tf.Variable(tf.zeros(self.trainable_vars[v].get_shape()), trainable=False))
 

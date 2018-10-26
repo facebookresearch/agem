@@ -41,7 +41,7 @@ ARCH = 'RESNET-B'
 PRETRAIN = False
 
 ## Model options
-MODELS = ['VAN', 'PI', 'EWC', 'MAS', 'RWALK', 'S-GEM'] #List of valid models
+MODELS = ['VAN', 'PI', 'EWC', 'MAS', 'RWALK', 'A-GEM'] #List of valid models
 IMP_METHOD = 'VAN'
 SYNAP_STGTH = 75000
 FISHER_EMA_DECAY = 0.9      # Exponential moving average decay factor for Fisher computation (online Fisher)
@@ -231,11 +231,11 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, num_classes_pe
         # List to store accuracies for a run
         evals = []
 
-        if model.imp_method == 'GEM' or model.imp_method == 'M-GEM':
+        if model.imp_method == 'GEM' or model.imp_method == 'S-GEM':
             # List to store the episodic memories of the previous tasks
             task_based_memory = []
 
-        if model.imp_method == 'S-GEM':
+        if model.imp_method == 'A-GEM':
             # Reserve a space for episodic memory
             episodic_images = np.zeros([episodic_mem_size, IMG_HEIGHT, IMG_WIDTH, IMG_CHANNELS])
             episodic_labels = np.zeros([episodic_mem_size, model.num_tasks*TOTAL_CLASSES])
@@ -410,7 +410,7 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, num_classes_pe
                         feed_dict[model.task_id] = task
                         _, loss = sess.run([model.train_subseq_tasks, model.reg_loss], feed_dict=feed_dict)
 
-                elif model.imp_method == 'M-GEM':
+                elif model.imp_method == 'S-GEM':
                     if task == 0:
                         logit_mask[:] = 0
                         logit_mask[task_labels[task]] = 1.0
@@ -439,7 +439,7 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, num_classes_pe
                         feed_dict[model.output_mask] = logit_mask
                         _, loss = sess.run([model.train_subseq_tasks, model.reg_loss], feed_dict=feed_dict)
 
-                elif model.imp_method == 'S-GEM':
+                elif model.imp_method == 'A-GEM':
                     if task == 0:
                         logit_mask[:] = 0
                         logit_mask[classes_adjusted_for_head] = 1.0
@@ -500,7 +500,7 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, num_classes_pe
 
             print('\t\t\t\tTraining for Task%d done!'%(task))
 
-            if model.imp_method == 'S-GEM':
+            if model.imp_method == 'A-GEM':
                 # Update the previous task labels
                 prev_task_labels.extend(classes_adjusted_for_head)
                 prev_class_attrs[classes_adjusted_for_head] = class_attr[task_labels[task]]
@@ -521,7 +521,7 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, num_classes_pe
                             'images': task_train_images,
                             'labels': task_train_labels,
                             }
-                    if model.imp_method == 'GEM' or model.imp_method == 'M-GEM':
+                    if model.imp_method == 'GEM' or model.imp_method == 'S-GEM':
                         # Get the important samples from the current task
                         if is_herding: # Sampling based on MoF
                             # Compute the features of training data
@@ -550,7 +550,7 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, num_classes_pe
                                 }
                         task_based_memory.append(task_memory)
 
-                    elif model.imp_method == 'S-GEM':
+                    elif model.imp_method == 'A-GEM':
                         # Do the uniform sampling/ only get examples from current task
                         importance_array = np.ones(num_train_examples, dtype=np.float32)
                         if KEEP_EPISODIC_MEMORY_FULL:
@@ -782,13 +782,13 @@ def main():
                 pass
             else:
                 learning_rate_list = [args.learning_rate]
-        elif imp_method == 'M-GEM':
+        elif imp_method == 'S-GEM':
             synap_stgth_list = [0]
             if args.online_cross_val:
                 pass
             else:
                 learning_rate_list = [args.learning_rate]
-        elif imp_method == 'S-GEM':
+        elif imp_method == 'A-GEM':
             synap_stgth_list = [0]
             if args.online_cross_val or args.cross_validate_mode:
                 pass

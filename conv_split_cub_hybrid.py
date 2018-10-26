@@ -40,7 +40,7 @@ ARCH = 'RESNET-B'
 PRETRAIN = True
 
 ## Model options
-MODELS = ['VAN', 'PI', 'EWC', 'MAS', 'RWALK', 'S-GEM'] #List of valid models
+MODELS = ['VAN', 'PI', 'EWC', 'MAS', 'RWALK', 'A-GEM'] #List of valid models
 IMP_METHOD = 'EWC'
 SYNAP_STGTH = 75000
 FISHER_EMA_DECAY = 0.9      # Exponential moving average decay factor for Fisher computation (online Fisher)
@@ -225,11 +225,11 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, classes_per_ta
         # List to store the classes that we have so far - used at test time
         test_labels = []
 
-        if model.imp_method == 'GEM' or model.imp_method == 'M-GEM':
+        if model.imp_method == 'GEM' or model.imp_method == 'S-GEM':
             # List to store the episodic memories of the previous tasks
             task_based_memory = []
 
-        if model.imp_method == 'S-GEM':
+        if model.imp_method == 'A-GEM':
             # Reserve a space for episodic memory
             episodic_images = np.zeros([episodic_mem_size, IMG_HEIGHT, IMG_WIDTH, IMG_CHANNELS])
             episodic_labels = np.zeros([episodic_mem_size, TOTAL_CLASSES])
@@ -270,9 +270,9 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, classes_per_ta
             if MULTI_TASK:
                 if task == 0:
                     for t_ in range(1, len(task_labels)):
-                        task_images, task_labels = load_task_specific_data(datasets[0]['train'], task_labels[t_])
-                        task_train_images = np.concatenate((task_train_images, task_images), axis=0)
-                        task_train_labels = np.concatenate((task_train_labels, task_labels), axis=0)
+                        task_tr_images, task_tr_labels = load_task_specific_data(datasets[0]['train'], task_labels[t_])
+                        task_train_images = np.concatenate((task_train_images, task_tr_images), axis=0)
+                        task_train_labels = np.concatenate((task_train_labels, task_tr_labels), axis=0)
 
                 else:
                     # Skip training for this task
@@ -281,7 +281,7 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, classes_per_ta
             print('Received {} images, {} labels at task {}'.format(task_train_images.shape[0], task_train_labels.shape[0], task))
 
             # Test for the tasks that we've seen so far
-            test_labels += task_labels[task]
+            test_labels.extend(task_labels[task])
 
             # Declare variables to store sample importance if sampling flag is set
             if do_sampling:
@@ -334,7 +334,7 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, classes_per_ta
             # Training loop for task T
             for iters in range(num_iters):
 
-                if train_single_epoch and not cross_validate_mode:
+                if train_single_epoch and not cross_validate_mode and not MULTI_TASK:
                     #if (iters <= 50 and iters % 5 == 0) or (iters > 50 and iters % 50 == 0):
                     if (iters < 10) or (iters % 5 == 0):
                         # Snapshot the current performance across all tasks after each mini-batch
@@ -424,7 +424,7 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, classes_per_ta
                         feed_dict[model.task_id] = task
                         _, loss = sess.run([model.train_subseq_tasks, model.reg_loss], feed_dict=feed_dict)
 
-                elif model.imp_method == 'M-GEM':
+                elif model.imp_method == 'S-GEM':
                     if task == 0:
                         logit_mask[:] = 0
                         logit_mask[task_labels[task]] = 1.0
@@ -449,7 +449,7 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, classes_per_ta
                         feed_dict[model.output_mask] = logit_mask
                         _, loss = sess.run([model.train_subseq_tasks, model.reg_loss], feed_dict=feed_dict)
 
-                elif model.imp_method == 'S-GEM':
+                elif model.imp_method == 'A-GEM':
                     if task == 0:
                         logit_mask[:] = 0
                         logit_mask[task_labels[task]] = 1.0
@@ -510,7 +510,7 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, classes_per_ta
 
             print('\t\t\t\tTraining for Task%d done!'%(task))
 
-            if model.imp_method == 'S-GEM':
+            if model.imp_method == 'A-GEM':
                 # Update the previous task labels and attributes
                 prev_task_labels += task_labels[task]
                 prev_class_attrs[prev_task_labels] = class_attr[prev_task_labels]
@@ -531,7 +531,7 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, classes_per_ta
                             'images': task_train_images,
                             'labels': task_train_labels,
                             }
-                    if model.imp_method == 'GEM' or model.imp_method == 'M-GEM':
+                    if model.imp_method == 'GEM' or model.imp_method == 'S-GEM':
                         # Get the important samples from the current task
                         if is_herding: # Sampling based on MoF
                             # Compute the features of training data
@@ -560,7 +560,7 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, classes_per_ta
                                 }
                         task_based_memory.append(task_memory)
 
-                    elif model.imp_method == 'S-GEM':
+                    elif model.imp_method == 'A-GEM':
                         if is_herding: # Sampling based on MoF
                             # Compute the features of training data
                             features_dim = model.image_feature_dim
@@ -673,8 +673,9 @@ def test_task_sequence(model, sess, test_data, class_attr, num_classes_per_task,
     logit_mask = np.zeros(TOTAL_CLASSES)
 
     for tt, labels in enumerate(test_tasks):
-        if tt > task:
-            return final_acc
+        if not MULTI_TASK:
+            if tt > task:
+                return final_acc
 
         logit_mask[:] = 0
         logit_mask[labels] = 1.0
@@ -789,13 +790,13 @@ def main():
                 pass
             else:
                 learning_rate_list = [args.learning_rate]
-        elif imp_method == 'M-GEM':
+        elif imp_method == 'S-GEM':
             synap_stgth_list = [0]
             if args.online_cross_val:
                 pass
             else:
                 learning_rate_list = [args.learning_rate]
-        elif imp_method == 'S-GEM':
+        elif imp_method == 'A-GEM':
             synap_stgth_list = [0]
             if args.online_cross_val or args.cross_validate_mode:
                 pass

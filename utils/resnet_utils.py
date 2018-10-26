@@ -24,7 +24,7 @@ def _conv(x, kernel_size, out_channels, stride, var_list, pad="SAME", name="conv
     output = tf.nn.conv2d(x, w, [1, stride, stride, 1], padding=pad)
     return output
 
-def _fc(x, out_dim, var_list, name="fc"):
+def _fc(x, out_dim, var_list, name="fc", is_cifar=False):
     """
     Define API for the fully connected layer. This includes both the variable
     declaration and matmul operation.
@@ -36,8 +36,10 @@ def _fc(x, out_dim, var_list, name="fc"):
         w = tf.get_variable('weights', [in_dim, out_dim], tf.float32, 
                 initializer=tf.random_uniform_initializer(-stdv, stdv))
                 #initializer=tf.truncated_normal_initializer(stddev=0.1))
-        #b = tf.get_variable('biases', [out_dim], tf.float32, initializer=tf.random_uniform_initializer(-stdv, stdv))
-        b = tf.get_variable('biases', [out_dim], tf.float32, initializer=tf.constant_initializer(0))
+        if is_cifar:
+            b = tf.get_variable('biases', [out_dim], tf.float32, initializer=tf.random_uniform_initializer(-stdv, stdv))
+        else:
+            b = tf.get_variable('biases', [out_dim], tf.float32, initializer=tf.constant_initializer(0))
 
         # Append the variable to the trainable variables list
         var_list.append(w)
