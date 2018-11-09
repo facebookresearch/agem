@@ -21,6 +21,16 @@ def snapshot_experiment_eval(logdir, experiment_id, data):
 
     print('Experimental Eval has been snapshotted to %s!'%(snapshot_file))
 
+def snapshot_task_labels(logdir, experiment_id, data):
+    """
+    Store the output of the experiment in a file
+    """
+    snapshot_file = logdir + '/' + experiment_id + '_task_labels.pickle'
+    with open(snapshot_file, 'wb') as f:
+        pickle.dump(data, f)
+
+    print('Experimental Eval has been snapshotted to %s!'%(snapshot_file))
+
 def snapshot_experiment_meta_data(logdir, experiment_id, exper_meta_data):
     """
     Store the meta-data of the experiment in a file

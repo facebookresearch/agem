@@ -17,7 +17,7 @@ from six.moves import cPickle as pickle
 
 from utils.data_utils import construct_split_cifar
 from utils.utils import get_sample_weights, sample_from_dataset, update_episodic_memory, concatenate_datasets, samples_for_each_class, sample_from_dataset_icarl, compute_fgt, load_task_specific_data
-from utils.vis_utils import plot_acc_multiple_runs, plot_histogram, snapshot_experiment_meta_data, snapshot_experiment_eval
+from utils.vis_utils import plot_acc_multiple_runs, plot_histogram, snapshot_experiment_meta_data, snapshot_experiment_eval, snapshot_task_labels
 from model import Model
 
 ###############################################################
@@ -159,6 +159,7 @@ def train_task_sequence(model, sess, datasets, cross_validate_mode, train_single
     """
     # List to store accuracy for each run
     runs = []
+    task_labels_dataset = []
 
     # Loop over number of runs to average over
     for runid in range(num_runs):
@@ -182,6 +183,9 @@ def train_task_sequence(model, sess, datasets, cross_validate_mode, train_single
             tt_offset = tt*classes_per_task
             task_labels.append(list(label_array[tt_offset:tt_offset+classes_per_task]))
             print('Task: {}, Labels:{}'.format(tt, task_labels[tt]))
+
+        # Store the task labels
+        task_labels_dataset.append(task_labels)
 
         # Set episodic memory size
         episodic_mem_size = mem_per_class * total_classes
@@ -672,7 +676,7 @@ def train_task_sequence(model, sess, datasets, cross_validate_mode, train_single
 
     runs = np.array(runs)
 
-    return runs
+    return runs, task_labels_dataset
 
 def test_task_sequence(model, sess, test_data, test_tasks, task, classes_per_task=0):
     """
@@ -830,19 +834,16 @@ def main():
 
         time_start = time.time()
         with tf.Session(config=config, graph=graph) as sess:
-            runs = train_task_sequence(model, sess, datasets, args.cross_validate_mode, args.train_single_epoch, args.eval_single_head, 
+            runs, task_labels_dataset = train_task_sequence(model, sess, datasets, args.cross_validate_mode, args.train_single_epoch, args.eval_single_head, 
                     args.do_sampling, args.is_herding, args.mem_size, args.train_iters, args.batch_size, args.num_runs, args.online_cross_val, args.random_seed)
             # Close the session
             sess.close()
         time_end = time.time()
         time_spent = time_end - time_start
 
-    # Compute the mean and std
-    acc_mean = runs.mean(0)
-    acc_std = runs.std(0)
-
     # Store all the results in one dictionary to process later
-    exper_acc = dict(mean=acc_mean, std=acc_std)
+    exper_acc = dict(mean=runs)
+    exper_labels = dict(labels=task_labels_dataset)
 
     # If cross-validation flag is enabled, store the stuff in a text file
     if args.cross_validate_mode:
@@ -856,6 +857,7 @@ def main():
 
     # Store the experiment output to a file
     snapshot_experiment_eval(args.log_dir, experiment_id, exper_acc)
+    snapshot_task_labels(args.log_dir, experiment_id, exper_labels)
 
 if __name__ == '__main__':
     main()

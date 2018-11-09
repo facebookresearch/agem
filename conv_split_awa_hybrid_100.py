@@ -18,7 +18,7 @@ from six.moves import cPickle as pickle
 
 from utils.data_utils import image_scaling, random_crop_and_pad_image, random_horizontal_flip, construct_split_awa
 from utils.utils import get_sample_weights, sample_from_dataset, concatenate_datasets, update_episodic_memory, samples_for_each_class, sample_from_dataset_icarl, load_task_specific_data, load_task_specific_data_in_proportion
-from utils.vis_utils import plot_acc_multiple_runs, plot_histogram, snapshot_experiment_meta_data, snapshot_experiment_eval
+from utils.vis_utils import plot_acc_multiple_runs, plot_histogram, snapshot_experiment_meta_data, snapshot_experiment_eval, snapshot_task_labels
 from model import Model
 
 ###############################################################
@@ -67,7 +67,7 @@ RESNET18_IMAGENET_CHECKPOINT = './resnet-18-pretrained-imagenet/model.ckpt'
 ## Evaluation options
 
 ## Task split
-NUM_TASKS = 50
+NUM_TASKS = 20
 MULTI_TASK = False
 
 ## Dataset specific options
@@ -178,6 +178,7 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, num_classes_pe
     """
     # List to store accuracy for each run
     runs = []
+    task_labels_dataset = []
 
     break_training = 0
     # Loop over number of runs to average over
@@ -207,6 +208,9 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, num_classes_pe
                     classes_appearing_in_tasks[lab] += 1
                 print('Task: {}, Labels:{}'.format(tt, task_labels[tt]))
             print('Class frequency in Tasks: {}'.format(classes_appearing_in_tasks))
+
+        # Store the task labels
+        task_labels_dataset.append(task_labels)
 
         # Initialize all the variables in the model
         sess.run(tf.global_variables_initializer())
@@ -631,7 +635,7 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, num_classes_pe
         return np.mean(ftask)
     else:
         runs = np.array(runs)
-        return runs
+        return runs, task_labels_dataset
 
 def test_task_sequence(model, sess, test_data, class_attr, num_classes_per_task, all_task_labels, task, online_cross_val):
     """
@@ -869,7 +873,7 @@ def main():
                     time_start = time.time()
                     with tf.Session(config=config, graph=graph) as sess:
                         saver = tf.train.Saver(var_list=tf.global_variables(), max_to_keep=100)
-                        runs = train_task_sequence(model, sess, saver, datasets, AWA_attr, CLASSES_PER_TASK, args.cross_validate_mode, 
+                        runs, task_labels_dataset = train_task_sequence(model, sess, saver, datasets, AWA_attr, CLASSES_PER_TASK, args.cross_validate_mode, 
                                 args.train_single_epoch, args.eval_single_head, args.do_sampling, args.is_herding, args.mem_size*CLASSES_PER_TASK*num_tasks, args.train_iters, 
                                 args.batch_size, args.num_runs, args.init_checkpoint, args.online_cross_val, args.random_seed)
                         # Close the session
@@ -887,13 +891,12 @@ def main():
                     with open(cross_validate_dump_file, 'a') as f:
                         f.write('HERDING: {} \t ARCH: {} \t LR:{} \t LAMBDA: {} \t ACC: {}\n'.format(args.is_herding, args.arch, lr, synap_stgth, runs))
                 else:
-                    # Compute the mean and std
-                    acc_mean = runs.mean(0)
-                    acc_std = runs.std(0)
                     # Store all the results in one dictionary to process later
-                    exper_acc = dict(mean=acc_mean, std=acc_std)
+                    exper_acc = dict(mean=runs)
+                    exper_labels = dict(labels=task_labels_dataset)
                     # Store the experiment output to a file
                     snapshot_experiment_eval(args.log_dir, experiment_id, exper_acc)
+                    snapshot_task_labels(args.log_dir, experiment_id, exper_labels)
 
 if __name__ == '__main__':
     main()

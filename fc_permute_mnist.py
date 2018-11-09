@@ -656,12 +656,8 @@ def main():
         time_end = time.time()
         time_spent = time_end - time_start
 
-    # Compute the mean and std
-    acc_mean = runs.mean(0)
-    acc_std = runs.std(0)
-
     # Store all the results in one dictionary to process later
-    exper_acc = dict(mean=acc_mean, std=acc_std)
+    exper_acc = dict(mean=runs)
 
     # If cross-validation flag is enabled, store the stuff in a text file
     if args.cross_validate_mode:
