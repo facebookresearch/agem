@@ -107,7 +107,7 @@ elif [ $DATASET = "AWA" ]; then
 
     for ((i=0;i<${#IMP_METHODS[@]};++i)); do
         imp_method="${IMP_METHODS[i]}"
-        python conv_split_awa_100.py --train-single-epoch --arch $ARCH --num-runs $NUM_RUNS --batch-size $BATCH_SIZE --optim $OPTIM --imp-method $imp_method --data-dir ./AWA_data/Animals_with_Attributes2/ --log-dir $OHOT_RESULTS_DIR
-        python conv_split_awa_hybrid_100.py --train-single-epoch --arch $ARCH --num-runs $NUM_RUNS --batch-size $BATCH_SIZE --optim $OPTIM --imp-method $imp_method --data-dir ./AWA_data/Animals_with_Attributes2/ --log-dir $JE_RESULTS_DIR
+        python conv_split_awa.py --train-single-epoch --arch $ARCH --num-runs $NUM_RUNS --batch-size $BATCH_SIZE --optim $OPTIM --imp-method $imp_method --data-dir ./AWA_data/Animals_with_Attributes2/ --log-dir $OHOT_RESULTS_DIR
+        python conv_split_awa_hybrid.py --train-single-epoch --arch $ARCH --num-runs $NUM_RUNS --batch-size $BATCH_SIZE --optim $OPTIM --imp-method $imp_method --data-dir ./AWA_data/Animals_with_Attributes2/ --log-dir $JE_RESULTS_DIR
     done
 fi
