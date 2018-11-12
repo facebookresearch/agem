@@ -1,14 +1,15 @@
 #! /bin/bash
 
-# Usage replicate_results.sh <DATASET-NAME>
+# Usage ./replicate_results.sh <DATASET-NAME> <THREAD-ID> <JE>
 ## where <DATASET-NAME>: MNIST, CIFAR, CUB, AWA 
 
 DATASET=$1
 THREAD=$2
-NUM_RUNS=5
+JE=$3
 OPTIM='SGD'
 BATCH_SIZE=10
 if [ $DATASET = "MNIST" ]; then
+    NUM_RUNS=5
     if [ $THREAD = 1 ]; then
         IMP_METHODS=( 'VAN' 'EWC' 'PI' )
         LRS=(0.03 0.03 0.1)
@@ -35,6 +36,7 @@ if [ $DATASET = "MNIST" ]; then
         python ./fc_permute_mnist.py --train-single-epoch --arch $ARCH --num-runs $NUM_RUNS --batch-size $BATCH_SIZE --optim $OPTIM --learning-rate $lr --imp-method $imp_method --synap-stgth $lam --log-dir $RESULTS_DIR
     done
 elif [ $DATASET = "CIFAR" ]; then
+    NUM_RUNS=5
     if [ $THREAD = 1 ]; then
         IMP_METHODS=( 'VAN' 'EWC' 'PI' )
         LRS=(0.01 0.03 0.01)
@@ -61,6 +63,7 @@ elif [ $DATASET = "CIFAR" ]; then
         python ./conv_split_cifar.py --train-single-epoch --arch $ARCH --num-runs $NUM_RUNS --batch-size $BATCH_SIZE --optim $OPTIM --learning-rate $lr --imp-method $imp_method --synap-stgth $lam --log-dir $RESULTS_DIR
     done
 elif [ $DATASET = "CUB" ]; then
+    NUM_RUNS=10
     if [ $THREAD = 1 ]; then
         IMP_METHODS=( 'VAN' 'EWC' )
     elif [ $THREAD = 2 ]; then
@@ -80,10 +83,14 @@ elif [ $DATASET = "CUB" ]; then
 
     for ((i=0;i<${#IMP_METHODS[@]};++i)); do
         imp_method="${IMP_METHODS[i]}"
-        python conv_split_cub.py --train-single-epoch --arch $ARCH --num-runs $NUM_RUNS --batch-size $BATCH_SIZE --optim $OPTIM --imp-method $imp_method --data-dir ./CUB_data/CUB_200_2011/images/ --log-dir $OHOT_RESULTS_DIR
-        python conv_split_cub_hybrid.py --train-single-epoch --arch $ARCH --num-runs $NUM_RUNS --batch-size $BATCH_SIZE --optim $OPTIM --imp-method $imp_method --data-dir ./CUB_data/CUB_200_2011/images/ --log-dir $JE_RESULTS_DIR
+        if [ $JE = 0 ]; then
+            python conv_split_cub.py --train-single-epoch --arch $ARCH --num-runs $NUM_RUNS --batch-size $BATCH_SIZE --optim $OPTIM --imp-method $imp_method --data-dir ./CUB_data/CUB_200_2011/images/ --log-dir $OHOT_RESULTS_DIR
+        elif [ $JE = 1 ]; then
+            python conv_split_cub_hybrid.py --train-single-epoch --arch $ARCH --num-runs $NUM_RUNS --batch-size $BATCH_SIZE --optim $OPTIM --imp-method $imp_method --data-dir ./CUB_data/CUB_200_2011/images/ --log-dir $JE_RESULTS_DIR
+        fi
     done
 elif [ $DATASET = "AWA" ]; then
+    NUM_RUNS=10
     if [ $THREAD = 1 ]; then
         IMP_METHODS=( 'VAN' )
     elif [ $THREAD = 2 ]; then
@@ -107,7 +114,10 @@ elif [ $DATASET = "AWA" ]; then
 
     for ((i=0;i<${#IMP_METHODS[@]};++i)); do
         imp_method="${IMP_METHODS[i]}"
-        python conv_split_awa.py --train-single-epoch --arch $ARCH --num-runs $NUM_RUNS --batch-size $BATCH_SIZE --optim $OPTIM --imp-method $imp_method --data-dir ./AWA_data/Animals_with_Attributes2/ --log-dir $OHOT_RESULTS_DIR
-        python conv_split_awa_hybrid.py --train-single-epoch --arch $ARCH --num-runs $NUM_RUNS --batch-size $BATCH_SIZE --optim $OPTIM --imp-method $imp_method --data-dir ./AWA_data/Animals_with_Attributes2/ --log-dir $JE_RESULTS_DIR
+        if [ $JE = 0 ]; then
+            python conv_split_awa.py --train-single-epoch --arch $ARCH --num-runs $NUM_RUNS --batch-size $BATCH_SIZE --optim $OPTIM --imp-method $imp_method --data-dir ./AWA_data/Animals_with_Attributes2/ --log-dir $OHOT_RESULTS_DIR
+        elif [ $JE = 1 ]; then
+            python conv_split_awa_hybrid.py --train-single-epoch --arch $ARCH --num-runs $NUM_RUNS --batch-size $BATCH_SIZE --optim $OPTIM --imp-method $imp_method --data-dir ./AWA_data/Animals_with_Attributes2/ --log-dir $JE_RESULTS_DIR
+        fi
     done
 fi
