@@ -25,6 +25,7 @@ $ ./download_cub_awa.sh
 ```
 When using this code, please cite our papers:
 
+```
 @inproceedings{AGEM,
   title={Efficient Lifelong Learning with A-GEM},
   author={Chaudhry, Arslan and Ranzato, Marc’Aurelio and Rohrbach, Marcus and Elhoseiny, Mohamed},
@@ -38,3 +39,4 @@ When using this code, please cite our papers:
   booktitle={ECCV},
   year={2018}
 }
+```
