@@ -1,13 +1,40 @@
-Repository for the Fast Lifelong Learning Project. 
+# Efficient Lifelong Learning with A-GEM
 
-The repo contains the code for the model:
-1) Vanilla (VAN)
-2) Elastic Weight Consolidation (EWC)
-3) Path Integration-based Synaptin Intelligence (PI)
-4) Gradient Episodic Memory (GEM) -> implementation not fully-tested
-5) Memory Aware Synapses (MAS)
-6) Riemannian Walk (RWALK)
-7) Progressive Neural Networks (PNN)
-8) Averaged Gradient Episodic Memory (S-GEM)
+This is the official implementation of the A-GEM paper (arXiv link) in Tensorflow.
 
-$ replicate_results.sh <DATASET> 
+## Requirements
+
+TensorFlow >= v1.9.0.
+
+## Training
+
+To replicate the results of the paper on a particular dataset, execute:
+```bash
+$ ./replicate_results.sh <DATASET> <THREAD-ID> <JE>
+```
+Example runs are:
+```bash
+$ ./replicate_results.sh MNIST 3      /* Train PNN and A-GEM on MNIST */
+$ ./replicate_results.sh CUB 1 1      /* Train JE models of RWALK and A-GEM on CUB */
+```
+
+For CUB and AWA experiments, download the dataset prior to running the above script. Run following for downloading the datasets:
+
+```bash
+$ ./download_cub_awa.sh
+```
+When using this code, please cite our papers:
+
+@inproceedings{AGEM,
+  title={Efficient Lifelong Learning with A-GEM},
+  author={Chaudhry, Arslan and Ranzato, Marc’Aurelio and Rohrbach, Marcus and Elhoseiny, Mohamed},
+  booktitle={ICLR},
+  year={2019}
+}
+
+@inproceedings{chaudhry2018riemannian,
+  title={Riemannian Walk for Incremental Learning: Understanding Forgetting and Intransigence},
+  author={Chaudhry, Arslan and Dokania, Puneet K and Ajanthan, Thalaiyasingam and Torr, Philip HS},
+  booktitle={ECCV},
+  year={2018}
+}
