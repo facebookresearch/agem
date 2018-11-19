@@ -661,6 +661,8 @@ def main():
 
     # If cross-validation flag is enabled, store the stuff in a text file
     if args.cross_validate_mode:
+        acc_mean = runs.mean(0)
+        acc_std = runs.std(0)
         cross_validate_dump_file = args.log_dir + '/' + 'PERMUTE_MNIST_%s_%s'%(args.imp_method, args.optim) + '.txt'
         with open(cross_validate_dump_file, 'a') as f:
             if MULTI_TASK:

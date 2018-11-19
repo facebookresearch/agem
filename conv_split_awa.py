@@ -807,10 +807,6 @@ def main():
                         str(args.batch_size), args.do_sampling, str(args.mem_size)) + datetime.datetime.now().strftime("%y-%m-%d-%H-%M")
                 snapshot_experiment_meta_data(args.log_dir, experiment_id, exper_meta_data)
 
-                # Variables to store the accuracies and standard deviations of the experiment
-                acc_mean = dict()
-                acc_std = dict()
-
                 # Reset the default graph
                 tf.reset_default_graph()
                 graph  = tf.Graph()
