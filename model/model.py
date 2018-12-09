@@ -57,7 +57,7 @@ class Model:
     """
 
     def __init__(self, x_train, y_, num_tasks, opt, imp_method, synap_stgth, fisher_update_after, fisher_ema_decay, network_arch='FC-S', 
-            is_ATT_DATASET=False, x_test=None, attr=None, hybrid=False):
+            is_ATT_DATASET=False, x_test=None, attr=None):
         """
         Instantiate the model
         """
@@ -71,7 +71,11 @@ class Model:
         else:
             self.total_classes = int(self.y_.get_shape()[1])
             self.train_phase = tf.placeholder(tf.bool, name='train_phase')
-            self.output_mask = tf.placeholder(dtype=tf.float32, shape=[self.total_classes])
+            if imp_method == 'A-GEM' and 'FC-' not in network_arch: # Only for Split-X setups
+                self.output_mask = [tf.placeholder(dtype=tf.float32, shape=[self.total_classes]) for i in range(num_tasks)]
+                self.mem_batch_size= tf.placeholder(dtype=tf.float32, shape=())
+            else:
+                self.output_mask = tf.placeholder(dtype=tf.float32, shape=[self.total_classes])
         self.sample_weights = tf.placeholder(tf.float32, shape=[None])
         self.task_id = tf.placeholder(dtype=tf.int32, shape=())
         self.store_grad_batches = tf.placeholder(dtype=tf.float32, shape=())
@@ -95,7 +99,6 @@ class Model:
         self.class_attr = attr
 
         if self.class_attr is not None:
-            self.hybrid = hybrid
             self.attr_dims = int(self.class_attr.get_shape()[1])
         
         # Save the arguments passed from the main script
@@ -185,11 +188,17 @@ class Model:
             # VGG-16
             logits = self.vgg_16_conv_feedforward(x)
             
-        elif self.network_arch == 'RESNET-S':
-            # Same resnet-18 as used in GEM paper
-            kernels = [3, 3, 3, 3, 3]
-            filters = [20, 20, 40, 80, 160]
-            strides = [1, 0, 2, 2, 2]
+        elif 'RESNET-' in self.network_arch:
+            if self.network_arch == 'RESNET-S':
+                # Same resnet-18 as used in GEM paper
+                kernels = [3, 3, 3, 3, 3]
+                filters = [20, 20, 40, 80, 160]
+                strides = [1, 0, 2, 2, 2]
+            elif self.network_arch == 'RESNET-B':
+                # Standard ResNet-18
+                kernels = [7, 3, 3, 3, 3]
+                filters = [64, 64, 128, 256, 512]
+                strides = [2, 0, 2, 2, 2]
             if self.imp_method == 'PNN':
                 self.task_logits = []
                 self.task_pruned_logits = []
@@ -197,25 +206,25 @@ class Model:
                 for i in range(self.num_tasks):
                     if i == 0:
                         self.task_logits.append(self.init_resent_column_progNN(x, kernels, filters, strides))
-                        self.task_pruned_logits.append(tf.where(tf.tile(tf.equal(self.output_mask[i][None,:], 1.0), [tf.shape(self.task_logits[i])[0], 1]), self.task_logits[i], NEG_INF*tf.ones_like(self.task_logits[i])))
-                        self.unweighted_entropy.append(tf.squeeze(tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=y_[i], logits=self.task_pruned_logits[i]))))
                     else:
                         self.task_logits.append(self.extensible_resnet_column_progNN(x, kernels, filters, strides, i))
-                        self.task_pruned_logits.append(tf.where(tf.tile(tf.equal(self.output_mask[i][None,:], 1.0), [tf.shape(self.task_logits[i])[0], 1]), self.task_logits[i], NEG_INF*tf.ones_like(self.task_logits[i])))
-                        self.unweighted_entropy.append(tf.squeeze(tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=y_[i], logits=self.task_pruned_logits[i]))))
+                    self.task_pruned_logits.append(tf.where(tf.tile(tf.equal(self.output_mask[i][None,:], 1.0), [tf.shape(self.task_logits[i])[0], 1]), self.task_logits[i], NEG_INF*tf.ones_like(self.task_logits[i])))
+                    self.unweighted_entropy.append(tf.squeeze(tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=y_[i], logits=self.task_pruned_logits[i]))))
+            elif self.imp_method == 'A-GEM':
+                logits = self.resnet18_conv_feedforward(x, kernels, filters, strides)
+                self.task_pruned_logits = []
+                self.unweighted_entropy = []
+                for i in range(self.num_tasks):
+                    self.task_pruned_logits.append(tf.where(tf.tile(tf.equal(self.output_mask[i][None,:], 1.0), [tf.shape(logits)[0], 1]), logits, NEG_INF*tf.ones_like(logits)))
+                    cross_entropy = tf.nn.softmax_cross_entropy_with_logits_v2(labels=y_, logits=self.task_pruned_logits[i])
+                    adjusted_entropy = tf.reduce_sum(tf.cast(tf.tile(tf.equal(self.output_mask[i][None,:], 1.0), [tf.shape(y_)[0], 1]), dtype=tf.float32) * y_, axis=1) * cross_entropy
+                    self.unweighted_entropy.append(tf.reduce_sum(adjusted_entropy)) # We will average it later on
             else:
                 logits = self.resnet18_conv_feedforward(x, kernels, filters, strides)
 
-        elif self.network_arch == 'RESNET-B':
-            # Standard ResNet-18
-            kernels = [7, 3, 3, 3, 3]
-            filters = [64, 64, 128, 256, 512]
-            strides = [2, 0, 2, 2, 2]
-            logits = self.resnet18_conv_feedforward(x, kernels, filters, strides)
-
         # Prune the predictions to only include the classes for which
         # the training data is present
-        if self.imp_method != 'PNN':
+        if (self.imp_method != 'PNN') and (self.imp_method != 'A-GEM' or 'FC-' in self.network_arch):
             self.pruned_logits = tf.where(tf.tile(tf.equal(self.output_mask[None,:], 1.0), [tf.shape(logits)[0], 1]), logits, NEG_INF*tf.ones_like(logits))
 
         # Create list of variables for storing different measures
@@ -224,7 +233,7 @@ class Model:
         self.init_vars()
 
         # Different entropy measures/ loss definitions
-        if self.imp_method != 'PNN':
+        if (self.imp_method != 'PNN') and (self.imp_method != 'A-GEM' or 'FC-' in self.network_arch):
             self.mse = 2.0*tf.nn.l2_loss(self.pruned_logits) # tf.nn.l2_loss computes sum(T**2)/ 2
             self.weighted_entropy = tf.reduce_mean(tf.losses.softmax_cross_entropy(y_, 
                 self.pruned_logits, self.sample_weights, reduction=tf.losses.Reduction.NONE))
@@ -273,11 +282,14 @@ class Model:
             self.merged_summary = tf.summary.merge_all()
 
         # Accuracy measure
-        if self.imp_method == 'PNN':
+        if (self.imp_method == 'PNN') or (self.imp_method == 'A-GEM' and 'FC-' not in self.network_arch):
             self.correct_predictions = []
             self.accuracy = []
             for i in range(self.num_tasks):
-                self.correct_predictions.append(tf.equal(tf.argmax(self.task_pruned_logits[i], 1), tf.argmax(y_[i], 1)))
+                if self.imp_method == 'PNN':
+                    self.correct_predictions.append(tf.equal(tf.argmax(self.task_pruned_logits[i], 1), tf.argmax(y_[i], 1)))
+                else:
+                    self.correct_predictions.append(tf.equal(tf.argmax(self.task_pruned_logits[i], 1), tf.argmax(y_, 1)))
                 self.accuracy.append(tf.reduce_mean(tf.cast(self.correct_predictions[i], tf.float32)))
         else:
             self.correct_predictions = tf.equal(tf.argmax(self.pruned_logits, 1), tf.argmax(y_, 1))
@@ -334,13 +346,6 @@ class Model:
         last_layer_biases = bias_variable([self.total_classes], name='attr_embed_b')
         self.trainable_vars.append(last_layer_biases)
 
-        # if self.hybrid then store the weights for the ONE-HOT head as well!
-        if self.hybrid:
-            if self.network_arch == 'RESNET-S':
-                ohot_logits = _fc(phi_x, self.total_classes, self.trainable_vars, name='fc_1', is_cifar=True)
-            else:
-                ohot_logits = _fc(phi_x, self.total_classes, self.trainable_vars, name='fc_1')
-
         # Now that we have all the trainable variables, initialize the different book keeping variables
         # Note: This method has to be called before calculating fisher 
         # or any other importance measure
@@ -350,20 +355,17 @@ class Model:
         zst_logits = tf.matmul(phi_x, tf.transpose(attr_embed)) + last_layer_biases
         # Prune the predictions to only include the classes for which
         # the training data is present
-        pruned_zst_logits = tf.where(tf.tile(tf.equal(self.output_mask[None,:], 1.0), 
-            [tf.shape(zst_logits)[0], 1]), zst_logits, NEG_INF*tf.ones_like(zst_logits))
-        # Prune logits for ONE-HOT head
-        if self.hybrid:
-            pruned_ohot_logits = tf.where(tf.tile(tf.equal(self.output_mask[None,:], 1.0), 
-                [tf.shape(ohot_logits)[0], 1]), ohot_logits, NEG_INF*tf.ones_like(ohot_logits))
-
-        # Compute the losses
-        if self.hybrid:
-            zst_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=y_, logits=pruned_zst_logits))
-            ohot_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=y_, logits=pruned_ohot_logits))
-            self.unweighted_entropy = (HYBRID_ALPHA * zst_loss) + (1 - HYBRID_ALPHA) * ohot_loss
-            self.mse = 2.0*tf.nn.l2_loss((HYBRID_ALPHA * pruned_zst_logits) + (1 - HYBRID_ALPHA) * pruned_ohot_logits) # tf.nn.l2_loss computes sum(T**2)/ 2
+        if self.imp_method == 'A-GEM':
+            pruned_zst_logits = []
+            self.unweighted_entropy = []
+            for i in range(self.num_tasks):
+                pruned_zst_logits.append(tf.where(tf.tile(tf.equal(self.output_mask[i][None,:], 1.0), [tf.shape(zst_logits)[0], 1]), zst_logits, NEG_INF*tf.ones_like(zst_logits)))
+                cross_entropy = tf.nn.softmax_cross_entropy_with_logits_v2(labels=y_, logits=pruned_zst_logits[i])
+                adjusted_entropy = tf.reduce_sum(tf.cast(tf.tile(tf.equal(self.output_mask[i][None,:], 1.0), [tf.shape(y_)[0], 1]), dtype=tf.float32) * y_, axis=1) * cross_entropy
+                self.unweighted_entropy.append(tf.reduce_sum(adjusted_entropy))
         else:
+            pruned_zst_logits = tf.where(tf.tile(tf.equal(self.output_mask[None,:], 1.0), 
+                [tf.shape(zst_logits)[0], 1]), zst_logits, NEG_INF*tf.ones_like(zst_logits))
             self.unweighted_entropy = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=y_, logits=pruned_zst_logits))
             self.mse = 2.0*tf.nn.l2_loss(pruned_zst_logits) # tf.nn.l2_loss computes sum(T**2)/ 2
 
@@ -405,15 +407,15 @@ class Model:
         self.merged_summary = tf.summary.merge_all()
 
         # Accuracy measure
-        if self.hybrid:
-            zst_prob = tf.nn.softmax(pruned_zst_logits)
-            ohot_prob = tf.nn.softmax(pruned_ohot_logits)
-            model_prob = (HYBRID_ALPHA * zst_prob) + (1 - HYBRID_ALPHA) * ohot_prob
-            self.correct_predictions = tf.equal(tf.argmax(model_prob, 1), tf.argmax(y_, 1))
+        if self.imp_method == 'A-GEM' and 'FC-' not in self.network_arch:
+            self.correct_predictions = []
+            self.accuracy = []
+            for i in range(self.num_tasks):
+                self.correct_predictions.append(tf.equal(tf.argmax(pruned_zst_logits[i], 1), tf.argmax(y_, 1)))
+                self.accuracy.append(tf.reduce_mean(tf.cast(self.correct_predictions[i], tf.float32)))
         else:
             self.correct_predictions = tf.equal(tf.argmax(pruned_zst_logits, 1), tf.argmax(y_, 1))
-
-        self.accuracy = tf.reduce_mean(tf.cast(self.correct_predictions, tf.float32))
+            self.accuracy = tf.reduce_mean(tf.cast(self.correct_predictions, tf.float32))
   
     def init_fc_column_progNN(self, layer_dims, h, apply_dropout=False):
         """
@@ -872,7 +874,7 @@ class Model:
             for i in range(self.num_tasks):
                 self.reg_gradients_vars.append([])
                 self.reg_gradients_vars[i] = self.opt.compute_gradients(self.unweighted_entropy[i], var_list=self.trainable_vars[i])
-        else:
+        elif imp_method != 'A-GEM': # For A-GEM we will define the losses and gradients later on
             # Regularized training loss
             self.reg_loss = tf.squeeze(self.unweighted_entropy + self.synap_stgth * reg)
             # Compute the gradients of the vanilla loss
@@ -1194,28 +1196,28 @@ class Model:
         """
         Define operations for Stochastic GEM
         """
-        grads = tf.gradients(self.unweighted_entropy, self.trainable_vars)
+        if 'FC-' in self.network_arch or self.imp_method == 'S-GEM':
+            self.agem_loss = self.unweighted_entropy
+        else:
+            self.agem_loss = tf.add_n([self.unweighted_entropy[i] for i in range(self.num_tasks)])/ self.mem_batch_size
+
+        ref_grads = tf.gradients(self.agem_loss, self.trainable_vars)
         # Reference gradient for previous tasks
-        self.store_ref_grads = [tf.assign(ref, grad) for ref, grad in zip(self.ref_grads, grads)]
-        # TODO: Comment the line above and uncomment the lines below if want to use an average gradient over the whole episodic memory for AWA and CUB! Too Slow!!
-        """
-        self.store_ref_grads = [tf.assign_add(ref, grad) for ref, grad in zip(self.ref_grads, grads)]
-        self.average_ref_grads = [tf.assign(grad, grad*(1.0/ self.store_grad_batches)) for grad in self.ref_grads]
-        self.reset_ref_grads = [tf.assign(grad, tf.zeros_like(grad)) for grad in self.ref_grads]
-        """
+        self.store_ref_grads = [tf.assign(ref, grad) for ref, grad in zip(self.ref_grads, ref_grads)]
         flat_ref_grads =  tf.concat([tf.reshape(grad, [-1]) for grad in self.ref_grads], 0)
         # Grandient on the current task
-        task_grads = tf.concat([tf.reshape(grad, [-1]) for grad in grads], 0)
-        with tf.control_dependencies([task_grads]):
-            dotp = tf.reduce_sum(tf.multiply(task_grads, flat_ref_grads))
+        task_grads = tf.gradients(self.agem_loss, self.trainable_vars)
+        flat_task_grads = tf.concat([tf.reshape(grad, [-1]) for grad in task_grads], 0)
+        with tf.control_dependencies([flat_task_grads]):
+            dotp = tf.reduce_sum(tf.multiply(flat_task_grads, flat_ref_grads))
             ref_mag = tf.reduce_sum(tf.multiply(flat_ref_grads, flat_ref_grads))
-            proj = task_grads - ((dotp/ ref_mag) * flat_ref_grads)
+            proj = flat_task_grads - ((dotp/ ref_mag) * flat_ref_grads)
             self.reset_violation_count = self.violation_count.assign(0)
             def increment_violation_count():
                 with tf.control_dependencies([tf.assign_add(self.violation_count, 1)]):
                     return tf.identity(self.violation_count)
             self.violation_count = tf.cond(tf.greater_equal(dotp, 0), lambda: tf.identity(self.violation_count), increment_violation_count)
-            projected_gradients = tf.cond(tf.greater_equal(dotp, 0), lambda: tf.identity(task_grads), lambda: tf.identity(proj))
+            projected_gradients = tf.cond(tf.greater_equal(dotp, 0), lambda: tf.identity(flat_task_grads), lambda: tf.identity(proj))
             # Convert the flat projected gradient vector into a list
             offset = 0
             store_proj_grad_ops = []
@@ -1232,7 +1234,7 @@ class Model:
                 self.train_subseq_tasks = self.opt.apply_gradients(zip(self.projected_gradients_list, self.trainable_vars))
 
         # Define training operations for the first task
-        self.train_first_task = self.opt.apply_gradients(self.reg_gradients_vars)
+        self.train_first_task = self.opt.apply_gradients(zip(task_grads, self.trainable_vars))
 
 
 #################################################################################

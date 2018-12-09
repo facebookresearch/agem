@@ -238,6 +238,7 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, classes_per_ta
             episodic_images = np.zeros([episodic_mem_size, IMG_HEIGHT, IMG_WIDTH, IMG_CHANNELS])
             episodic_labels = np.zeros([episodic_mem_size, TOTAL_CLASSES])
             episodic_filled_counter = 0
+            a_gem_logit_mask = np.zeros([model.num_tasks, TOTAL_CLASSES])
             # Labels for all the tasks that we have seen in the past
             prev_task_labels = []
             prev_class_attrs = np.zeros_like(class_attr)
@@ -345,11 +346,15 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, classes_per_ta
                         fbatch = test_task_sequence(model, sess, datasets[0]['test'], class_attr, classes_per_task, task_labels, task)
                         ftask.append(fbatch)
                         # Set the output labels over which the model needs to be trained
-                        logit_mask[:] = 0
-                        if do_sampling:
-                            logit_mask[test_labels] = 1.0
+                        if model.imp_method == 'A-GEM':
+                            a_gem_logit_mask[:] = 0
+                            a_gem_logit_mask[task][task_labels[task]] = 1.0
                         else:
-                            logit_mask[task_labels[task]] = 1.0
+                            logit_mask[:] = 0
+                            if do_sampling:
+                                logit_mask[test_labels] = 1.0
+                            else:
+                                logit_mask[task_labels[task]] = 1.0
 
                 if train_single_epoch:
                     offset = iters * batch_size
@@ -434,7 +439,7 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, classes_per_ta
                         logit_mask[task_labels[task]] = 1.0
                         feed_dict[model.output_mask] = logit_mask
                         # Normal application of gradients
-                        _, loss = sess.run([model.train_first_task, model.reg_loss], feed_dict=feed_dict)
+                        _, loss = sess.run([model.train_first_task, model.agem_loss], feed_dict=feed_dict)
                     else:
                         # Randomly sample a task from the previous tasks
                         prev_task = np.random.randint(0, task)
@@ -451,20 +456,24 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, classes_per_ta
                         logit_mask[:] = 0
                         logit_mask[task_labels[task]] = 1.0
                         feed_dict[model.output_mask] = logit_mask
-                        _, loss = sess.run([model.train_subseq_tasks, model.reg_loss], feed_dict=feed_dict)
+                        _, loss = sess.run([model.train_subseq_tasks, model.agem_loss], feed_dict=feed_dict)
 
                 elif model.imp_method == 'A-GEM':
                     if task == 0:
-                        logit_mask[:] = 0
-                        logit_mask[task_labels[task]] = 1.0
-                        feed_dict[model.output_mask] = logit_mask
+                        a_gem_logit_mask[:] = 0
+                        a_gem_logit_mask[task][task_labels[task]] = 1.0
+                        logit_mask_dict = {m_t: i_t for (m_t, i_t) in zip(model.output_mask, a_gem_logit_mask)}
+                        feed_dict.update(logit_mask_dict)
+                        feed_dict[model.mem_batch_size] = batch_size
                         # Normal application of gradients
-                        _, loss = sess.run([model.train_first_task, model.reg_loss], feed_dict=feed_dict)
+                        _, loss = sess.run([model.train_first_task, model.agem_loss], feed_dict=feed_dict)
                     else:
                         ## Compute and store the reference gradients on the previous tasks
                         # Set the mask for all the previous tasks so far
-                        logit_mask[:] = 0
-                        logit_mask[prev_task_labels] = 1.0
+                        a_gem_logit_mask[:] = 0
+                        for tt in range(task):
+                            a_gem_logit_mask[tt][task_labels[tt]] = 1.0
+
                         if KEEP_EPISODIC_MEMORY_FULL:
                             mem_sample_mask = np.random.choice(episodic_mem_size, EPS_MEM_BATCH_SIZE, replace=False) # Sample without replacement so that we don't sample an example more than once
                         else:
@@ -473,15 +482,20 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, classes_per_ta
                             else:
                                 # Sample a random subset from episodic memory buffer
                                 mem_sample_mask = np.random.choice(episodic_filled_counter, EPS_MEM_BATCH_SIZE, replace=False) # Sample without replacement so that we don't sample an example more than once
-                        # Store the reference gradient
-                        sess.run(model.store_ref_grads, feed_dict={model.x: episodic_images[mem_sample_mask], model.y_: episodic_labels[mem_sample_mask],
-                            model.class_attr: prev_class_attrs,
-                            model.keep_prob: 1.0, model.output_mask: logit_mask, model.train_phase: True})
+                        
+                        ref_feed_dict = {model.x: episodic_images[mem_sample_mask], model.y_: episodic_labels[mem_sample_mask], 
+                                model.class_attr: prev_class_attrs, model.keep_prob: 1.0, model.train_phase: True}
+                        logit_mask_dict = {m_t: i_t for (m_t, i_t) in zip(model.output_mask, a_gem_logit_mask)}
+                        ref_feed_dict.update(logit_mask_dict)
+                        ref_feed_dict[model.mem_batch_size] = float(len(mem_sample_mask))
+                        sess.run(model.store_ref_grads, feed_dict=ref_feed_dict)
                         # Compute the gradient for current task and project if need be
-                        logit_mask[:] = 0
-                        logit_mask[task_labels[task]] = 1.0
-                        feed_dict[model.output_mask] = logit_mask
-                        _, loss = sess.run([model.train_subseq_tasks, model.reg_loss], feed_dict=feed_dict)
+                        a_gem_logit_mask[:] = 0
+                        a_gem_logit_mask[task][task_labels[task]] = 1.0
+                        logit_mask_dict = {m_t: i_t for (m_t, i_t) in zip(model.output_mask, a_gem_logit_mask)}
+                        feed_dict.update(logit_mask_dict)
+                        feed_dict[model.mem_batch_size] = batch_size
+                        _, loss = sess.run([model.train_subseq_tasks, model.agem_loss], feed_dict=feed_dict)
 
                 elif model.imp_method == 'RWALK':
                     feed_dict[model.output_mask] = logit_mask
@@ -640,6 +654,7 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, classes_per_ta
                     ftask = test_task_sequence(model, sess, datasets[0]['test'], class_attr, classes_per_task, task_labels, task)
             elif train_single_epoch:
                 fbatch = test_task_sequence(model, sess, datasets[0]['test'], class_attr, classes_per_task, task_labels, task)
+                print('Task: {} Acc: {}'.format(task, fbatch))
                 ftask.append(fbatch)
             else:
                 # Multi-epoch training, so compute accuracy at the end
@@ -674,37 +689,54 @@ def test_task_sequence(model, sess, test_data, class_attr, num_classes_per_task,
     Snapshot the current performance
     """
     final_acc = np.zeros(model.num_tasks)
-    logit_mask = np.zeros(TOTAL_CLASSES)
+    if model.imp_method == 'A-GEM':
+        logit_mask = np.zeros([model.num_tasks, TOTAL_CLASSES])
+    else:
+        logit_mask = np.zeros(TOTAL_CLASSES)
 
     for tt, labels in enumerate(test_tasks):
         if not MULTI_TASK:
             if tt > task:
                 return final_acc
 
-        logit_mask[:] = 0
-        logit_mask[labels] = 1.0
         masked_class_attrs = np.zeros_like(class_attr)
         masked_class_attrs[labels] = class_attr[labels]
-
         task_test_images, task_test_labels = load_task_specific_data(test_data, labels)
         total_test_samples = task_test_images.shape[0]
         samples_at_a_time = 10
         total_corrects = 0
+        logit_mask[:] = 0
+        if model.imp_method == 'A-GEM':
+            logit_mask[tt][labels] = 1.0
+            logit_mask_dict = {m_t: i_t for (m_t, i_t) in zip(model.output_mask, logit_mask)}
+        else:
+            logit_mask[labels] = 1.0
+
         for i in range(total_test_samples/ samples_at_a_time):
             offset = i*samples_at_a_time
             feed_dict = {model.x: task_test_images[offset:offset+samples_at_a_time], 
                     model.y_: task_test_labels[offset:offset+samples_at_a_time],
                     model.class_attr: masked_class_attrs,
-                    model.keep_prob: 1.0, model.train_phase: False, model.output_mask: logit_mask}
-            total_corrects += np.sum(sess.run(model.correct_predictions, feed_dict=feed_dict))
+                    model.keep_prob: 1.0, model.train_phase: False}
+            if model.imp_method == 'A-GEM':
+                feed_dict.update(logit_mask_dict)
+                total_corrects += np.sum(sess.run(model.correct_predictions[tt], feed_dict=feed_dict))
+            else:
+                feed_dict[model.output_mask] = logit_mask
+                total_corrects += np.sum(sess.run(model.correct_predictions, feed_dict=feed_dict))
         # Compute the corrects on residuals
         offset = (i+1)*samples_at_a_time
         num_residuals = total_test_samples % samples_at_a_time 
         feed_dict = {model.x: task_test_images[offset:offset+num_residuals], 
                 model.y_: task_test_labels[offset:offset+num_residuals], 
                 model.class_attr: masked_class_attrs,
-                model.keep_prob: 1.0, model.train_phase: False, model.output_mask: logit_mask}
-        total_corrects += np.sum(sess.run(model.correct_predictions, feed_dict=feed_dict))
+                model.keep_prob: 1.0, model.train_phase: False}
+        if model.imp_method == 'A-GEM':
+            feed_dict.update(logit_mask_dict)
+            total_corrects += np.sum(sess.run(model.correct_predictions[tt], feed_dict=feed_dict))
+        else:
+            feed_dict[model.output_mask] = logit_mask
+            total_corrects += np.sum(sess.run(model.correct_predictions, feed_dict=feed_dict))
 
         # Mean accuracy on the task
         acc = total_corrects/ float(total_test_samples)
@@ -865,10 +897,10 @@ def main():
                     if args.train_single_epoch:
                         # When training using a single epoch then there is no need for data augmentation
                         model = Model(x, y_, num_tasks, opt, imp_method, synap_stgth, args.fisher_update_after,
-                                args.fisher_ema_decay, network_arch=args.arch, is_ATT_DATASET=True, attr=attr, hybrid=args.set_hybrid)
+                                args.fisher_ema_decay, network_arch=args.arch, is_ATT_DATASET=True, attr=attr)
                     else:
                         model = Model(x_aug, y_, num_tasks, opt, imp_method, synap_stgth, args.fisher_update_after, 
-                                args.fisher_ema_decay, network_arch=args.arch, is_ATT_DATASET=True, x_test=x, attr=attr, hybrid=args.set_hybrid)
+                                args.fisher_ema_decay, network_arch=args.arch, is_ATT_DATASET=True, x_test=x, attr=attr)
 
                     # Set up tf session and initialize variables.
                     config = tf.ConfigProto()

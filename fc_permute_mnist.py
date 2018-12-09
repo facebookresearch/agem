@@ -310,7 +310,7 @@ def train_task_sequence(model, sess, cross_validate_mode, train_single_epoch, ev
                 elif model.imp_method == 'S-GEM':
                     if task == 0:
                         # Normal application of gradients
-                        _, loss = sess.run([model.train_first_task, model.reg_loss], feed_dict=feed_dict)
+                        _, loss = sess.run([model.train_first_task, model.agem_loss], feed_dict=feed_dict)
                     else:
                         # Randomly sample a task from the previous tasks
                         prev_task = np.random.randint(0, task)
@@ -318,12 +318,12 @@ def train_task_sequence(model, sess, cross_validate_mode, train_single_epoch, ev
                         sess.run(model.store_ref_grads, feed_dict={model.x: task_based_memory[prev_task]['images'], model.y_: task_based_memory[prev_task]['labels'],
                             model.keep_prob: 1.0, model.output_mask: logit_mask, model.train_phase: True})
                         # Compute the gradient for current task and project if need be
-                        _, loss = sess.run([model.train_subseq_tasks, model.reg_loss], feed_dict=feed_dict)
+                        _, loss = sess.run([model.train_subseq_tasks, model.agem_loss], feed_dict=feed_dict)
 
                 elif model.imp_method == 'A-GEM':
                     if task == 0:
                         # Normal application of gradients
-                        _, loss = sess.run([model.train_first_task, model.reg_loss], feed_dict=feed_dict)
+                        _, loss = sess.run([model.train_first_task, model.agem_loss], feed_dict=feed_dict)
                     else:
                         ## Compute and store the reference gradients on the previous tasks
                         if KEEP_EPISODIC_MEMORY_FULL:
@@ -338,10 +338,10 @@ def train_task_sequence(model, sess, cross_validate_mode, train_single_epoch, ev
                         sess.run(model.store_ref_grads, feed_dict={model.x: episodic_images[mem_sample_mask], model.y_: episodic_labels[mem_sample_mask],
                             model.keep_prob: 1.0, model.output_mask: logit_mask, model.train_phase: True})
                         if COUNT_VIOLATIONS:
-                            vc, _, loss = sess.run([model.violation_count, model.train_subseq_tasks, model.reg_loss], feed_dict=feed_dict)
+                            vc, _, loss = sess.run([model.violation_count, model.train_subseq_tasks, model.agem_loss], feed_dict=feed_dict)
                         else:
                             # Compute the gradient for current task and project if need be
-                            _, loss = sess.run([model.train_subseq_tasks, model.reg_loss], feed_dict=feed_dict)
+                            _, loss = sess.run([model.train_subseq_tasks, model.agem_loss], feed_dict=feed_dict)
 
                 elif model.imp_method == 'RWALK':
                     # If first iteration of the first task then set the initial value of the running fisher
