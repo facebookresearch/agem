@@ -1,6 +1,6 @@
 # Efficient Lifelong Learning with A-GEM
 
-This is the official implementation of the A-GEM paper (arXiv link) in Tensorflow.
+This is the official implementation of the [Averaged Gradient Episodic Memory (A-GEM)](https://arxiv.org/abs/1812.00420) in Tensorflow.
 
 ## Requirements
 
@@ -23,6 +23,8 @@ For CUB and AWA experiments, download the dataset prior to running the above scr
 ```bash
 $ ./download_cub_awa.sh
 ```
+The plotting code is provided under the foloder `plotting_code/`. Update the paths in the plotting code accordingly.
+ 
 When using this code, please cite our papers:
 
 ```
@@ -40,3 +42,7 @@ When using this code, please cite our papers:
   year={2018}
 }
 ```
+
+## Questions/ Bugs
+* For questions, contact the author Arslan Chaudhry (arslan.chaudhry@eng.ox.ac.uk).
+* Feel free to open the bugs if anything is broken. Any comment/ improvement would be highly appreciated. 
