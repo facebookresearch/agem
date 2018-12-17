@@ -6,9 +6,11 @@
 
 CUB_DIR='CUB_data'
 CUB_DNLD_FILE='CUB_200_2011.tgz'
+CUB_PRETRAIN_DIR='resnet-18-pretrained-imagenet'
 AWA_DIR='AWA_data'
 AWA_DNLD_FILE='AwA2-data.zip'
 
+# Download CUB dataset
 if [ ! -d $CUB_DIR ]; then
     mkdir $CUB_DIR
 fi
@@ -19,6 +21,17 @@ fi
 tar xzf $CUB_DNLD_FILE
 cd ../
 
+# Download ImageNet pretrained model for CUB
+if [ ! -d $CUB_PRETRAIN_DIR ]; then
+    mkdir $CUB_PRETRAIN_DIR
+fi
+cd $CUB_PRETRAIN_DIR
+wget -O model.ckpt.data-00000-of-00001 https://www.dropbox.com/s/oea0jufizm55imo/model.ckpt.data-00000-of-00001?dl=0
+wget -O model.ckpt.index https://www.dropbox.com/s/khsh0sjvqvrz6t1/model.ckpt.index?dl=0
+wget -O model.ckpt.meta https://www.dropbox.com/s/dtb5qjv6i27tlyl/model.ckpt.meta?dl=0
+cd ../
+
+# Download AWA dataset
 if [ ! -d $AWA_DIR ]; then
     mkdir $AWA_DIR
 fi

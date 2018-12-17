@@ -8,7 +8,7 @@ TensorFlow >= v1.9.0.
 
 ## Training
 
-To replicate the results of the paper on a particular dataset, execute:
+To replicate the results of the paper on a particular dataset, execute (see the Note below for downloading the CUB and AWA datasets):
 ```bash
 $ ./replicate_results.sh <DATASET> <THREAD-ID> <JE>
 ```
@@ -18,12 +18,13 @@ $ ./replicate_results.sh MNIST 3      /* Train PNN and A-GEM on MNIST */
 $ ./replicate_results.sh CUB 1 1      /* Train JE models of RWALK and A-GEM on CUB */
 ```
 
+### Note
 For CUB and AWA experiments, download the dataset prior to running the above script. Run following for downloading the datasets:
 
 ```bash
 $ ./download_cub_awa.sh
 ```
-The plotting code is provided under the foloder `plotting_code/`. Update the paths in the plotting code accordingly.
+The plotting code is provided under the folder `plotting_code/`. Update the paths in the plotting code accordingly.
  
 When using this code, please cite our papers:
 
@@ -45,4 +46,4 @@ When using this code, please cite our papers:
 
 ## Questions/ Bugs
 * For questions, contact the author Arslan Chaudhry (arslan.chaudhry@eng.ox.ac.uk).
-* Feel free to open the bugs if anything is broken. Any comment/ improvement would be highly appreciated. 
+* Feel free to open the bugs if anything is broken. 
