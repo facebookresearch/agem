@@ -229,7 +229,7 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, classes_per_ta
         # List to store the classes that we have so far - used at test time
         test_labels = []
 
-        if model.imp_method == 'GEM' or model.imp_method == 'S-GEM':
+        if model.imp_method == 'S-GEM':
             # List to store the episodic memories of the previous tasks
             task_based_memory = []
 
@@ -401,38 +401,6 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, classes_per_ta
                     feed_dict[model.output_mask] = logit_mask
                     _, loss = sess.run([model.train, model.reg_loss], feed_dict=feed_dict)
 
-                elif model.imp_method == 'GEM':
-                    if task == 0:
-                        logit_mask[:] = 0
-                        logit_mask[task_labels[task]] = 1.0
-                        feed_dict[model.output_mask] = logit_mask
-                        # Normal application of gradients
-                        _, loss = sess.run([model.train_first_task, model.reg_loss], feed_dict=feed_dict)
-                    else:
-                        # Compute the gradients on the episodic memory of all the previous tasks
-                        for prev_task in range(task):
-                            # T-th task gradients
-                            logit_mask[:] = 0
-                            logit_mask[task_labels[prev_task]] = 1.0
-                            prev_class_attrs = np.zeros_like(class_attr)
-                            if online_cross_val:
-                                attr_offset = prev_task * classes_per_task
-                            else:
-                                attr_offset = (prev_task + K_FOR_CROSS_VAL) * classes_per_task
-
-                            prev_class_attrs[attr_offset:attr_offset+classes_per_task] = class_attr[attr_offset:attr_offset+classes_per_task]
-                            sess.run(model.store_ref_grads, feed_dict={model.x: task_based_memory[prev_task]['images'],
-                                model.class_attr: prev_class_attrs,
-                                model.y_: task_based_memory[prev_task]['labels'], model.task_id: prev_task, model.keep_prob: 1.0,
-                                model.output_mask: logit_mask, model.train_phase: True})
-
-                        # Compute the gradient on the mini-batch of the current task
-                        logit_mask[:] = 0
-                        logit_mask[task_labels[task]] = 1.0
-                        feed_dict[model.output_mask] = logit_mask
-                        feed_dict[model.task_id] = task
-                        _, loss = sess.run([model.train_subseq_tasks, model.reg_loss], feed_dict=feed_dict)
-
                 elif model.imp_method == 'S-GEM':
                     if task == 0:
                         logit_mask[:] = 0
@@ -549,7 +517,7 @@ def train_task_sequence(model, sess, saver, datasets, class_attr, classes_per_ta
                             'images': task_train_images,
                             'labels': task_train_labels,
                             }
-                    if model.imp_method == 'GEM' or model.imp_method == 'S-GEM':
+                    if model.imp_method == 'S-GEM':
                         # Get the important samples from the current task
                         if is_herding: # Sampling based on MoF
                             # Compute the features of training data
@@ -820,12 +788,6 @@ def main():
             else:
                 synap_stgth_list = [1]
                 learning_rate_list = [0.03]
-        elif imp_method == 'GEM':
-            synap_stgth_list = [0]
-            if args.online_cross_val:
-                pass
-            else:
-                learning_rate_list = [args.learning_rate]
         elif imp_method == 'S-GEM':
             synap_stgth_list = [0]
             if args.online_cross_val:

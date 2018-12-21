@@ -39,7 +39,7 @@ VALID_ARCHS = ['FC-S', 'FC-B']
 ARCH = 'FC-S'
 
 ## Model options
-MODELS = ['VAN', 'PI', 'EWC', 'MAS', 'GEM', 'RWALK', 'A-GEM', 'S-GEM', 'FTR_EXT', 'PNN'] #List of valid models 
+MODELS = ['VAN', 'PI', 'EWC', 'MAS', 'RWALK', 'A-GEM', 'S-GEM', 'FTR_EXT', 'PNN'] #List of valid models 
 IMP_METHOD = 'EWC'
 SYNAP_STGTH = 75000
 FISHER_EMA_DECAY = 0.9      # Exponential moving average decay factor for Fisher computation (online Fisher)
@@ -152,7 +152,7 @@ def train_task_sequence(model, sess, cross_validate_mode, train_single_epoch, ev
         # List to store the classes that we have so far - used at test time
         test_labels = np.arange(TOTAL_CLASSES)
 
-        if model.imp_method == 'GEM' or model.imp_method == 'S-GEM':
+        if model.imp_method == 'S-GEM':
             # List to store the episodic memories of the previous tasks
             task_based_memory = []
 
@@ -291,22 +291,6 @@ def train_task_sequence(model, sess, cross_validate_mode, train_single_epoch, ev
                 elif model.imp_method == 'MAS':
                     _, loss = sess.run([model.train, model.reg_loss], feed_dict=feed_dict)
 
-                elif model.imp_method == 'GEM':
-                    if task == 0:
-                        # Normal application of gradients
-                        _, loss = sess.run([model.train_first_task, model.reg_loss], feed_dict=feed_dict)
-                    else:
-                        # Compute the gradients on the episodic memory of all the previous tasks
-                        for prev_task in range(task):
-                            # T-th task gradients.
-                            sess.run(model.store_ref_grads, feed_dict={model.x: task_based_memory[prev_task]['images'],
-                                model.y_: task_based_memory[prev_task]['labels'], model.task_id: prev_task, model.keep_prob: 1.0, 
-                                model.output_mask: logit_mask, model.train_phase: True})
-
-                        # Compute the gradient on the mini-batch of the current task
-                        feed_dict[model.task_id] = task
-                        _, loss = sess.run([model.train_subseq_tasks, model.reg_loss], feed_dict=feed_dict)
-
                 elif model.imp_method == 'S-GEM':
                     if task == 0:
                         # Normal application of gradients
@@ -389,7 +373,7 @@ def train_task_sequence(model, sess, cross_validate_mode, train_single_epoch, ev
                             'images': task_train_images,
                             'labels': task_train_labels,
                             }
-                    if model.imp_method == 'GEM' or model.imp_method == 'S-GEM':
+                    if model.imp_method == 'S-GEM':
                         # Get the important samples from the current task
                         if is_herding: # Sampling based on MoF
                             # Compute the features of training data

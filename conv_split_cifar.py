@@ -39,7 +39,7 @@ VALID_ARCHS = ['CNN', 'RESNET-S', 'RESNET-B', 'VGG']
 ARCH = 'RESNET-S'
 
 ## Model options
-MODELS = ['VAN', 'PI', 'EWC', 'MAS', 'GEM', 'RWALK', 'M-EWC', 'S-GEM', 'A-GEM', 'FTR_EXT', 'PNN'] #List of valid models 
+MODELS = ['VAN', 'PI', 'EWC', 'MAS', 'RWALK', 'M-EWC', 'S-GEM', 'A-GEM', 'FTR_EXT', 'PNN'] #List of valid models 
 IMP_METHOD = 'EWC'
 SYNAP_STGTH = 75000
 FISHER_EMA_DECAY = 0.9          # Exponential moving average decay factor for Fisher computation (online Fisher)
@@ -202,7 +202,7 @@ def train_task_sequence(model, sess, datasets, cross_validate_mode, train_single
         # List to store the classes that we have so far - used at test time
         test_labels = []
 
-        if model.imp_method == 'GEM' or  model.imp_method == 'S-GEM':
+        if model.imp_method == 'S-GEM':
             # List to store the episodic memories of the previous tasks
             task_based_memory = []
 
@@ -410,30 +410,6 @@ def train_task_sequence(model, sess, datasets, cross_validate_mode, train_single
                     feed_dict[model.output_mask] = logit_mask
                     _, loss = sess.run([model.train, model.reg_loss], feed_dict=feed_dict)
 
-                elif model.imp_method == 'GEM':
-                    if task == 0:
-                        logit_mask[:] = 0
-                        logit_mask[task_labels[task]] = 1.0
-                        feed_dict[model.output_mask] = logit_mask
-                        # Normal application of gradients
-                        _, loss = sess.run([model.train_first_task, model.reg_loss], feed_dict=feed_dict)
-                    else:
-                        # Compute the gradients on the episodic memory of all the previous tasks
-                        for prev_task in range(task):
-                            # T-th task gradients
-                            logit_mask[:] = 0
-                            logit_mask[task_labels[prev_task]] = 1.0
-                            sess.run(model.store_ref_grads, feed_dict={model.x: task_based_memory[prev_task]['images'], 
-                                model.y_: task_based_memory[prev_task]['labels'], model.task_id: prev_task, model.keep_prob: 1.0, 
-                                model.output_mask: logit_mask, model.train_phase: True})
-
-                        # Compute the gradient on the mini-batch of the current task
-                        logit_mask[:] = 0
-                        logit_mask[task_labels[task]] = 1.0
-                        feed_dict[model.output_mask] = logit_mask
-                        feed_dict[model.task_id] = task
-                        _, loss = sess.run([model.train_subseq_tasks, model.reg_loss], feed_dict=feed_dict)
-
                 elif model.imp_method == 'S-GEM':
                     if task == 0:
                         logit_mask[:] = 0
@@ -547,7 +523,7 @@ def train_task_sequence(model, sess, datasets, cross_validate_mode, train_single
                             'images': task_train_images,
                             'labels': task_train_labels,
                             }
-                    if model.imp_method == 'GEM' or model.imp_method == 'S-GEM': 
+                    if model.imp_method == 'S-GEM': 
                         # Get the important samples from the current task
                         if is_herding: # Sampling based on MoF
                             # Compute the features of training data
