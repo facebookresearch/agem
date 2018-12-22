@@ -1,3 +1,9 @@
+# Copyright 2017-present, Facebook, Inc.
+# All rights reserved.
+#
+# This source code is licensed under the license found in the
+# LICENSE file in the root directory of this source tree.
+
 from .data_utils import construct_permute_mnist, construct_split_mnist, construct_split_cifar, construct_split_cub, construct_split_imagenet 
 from .data_utils import image_scaling, random_crop_and_pad_image, random_horizontal_flip 
 from .utils import clone_variable_list, create_fc_layer, create_conv_layer, sample_from_dataset, update_episodic_memory, update_episodic_memory_with_less_data, concatenate_datasets 

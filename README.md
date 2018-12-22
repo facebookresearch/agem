@@ -46,4 +46,7 @@ When using this code, please cite our papers:
 
 ## Questions/ Bugs
 * For questions, contact the author Arslan Chaudhry (arslan.chaudhry@eng.ox.ac.uk).
-* Feel free to open the bugs if anything is broken. 
+* Feel free to open the bugs if anything is broken.
+
+## License
+This source code is released under The MIT License found in the LICENSE file in the root directory of this source tree. 
