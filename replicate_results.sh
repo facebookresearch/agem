@@ -1,3 +1,5 @@
+# Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
+#
 #! /bin/bash
 
 # Usage ./replicate_results.sh <DATASET-NAME> <THREAD-ID> <JE>

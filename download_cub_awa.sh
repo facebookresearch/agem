@@ -1,3 +1,5 @@
+# Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
+#
 #! /bin/bash
 
 # Usage ./download_cub_awa.sh
