@@ -355,6 +355,28 @@ def sample_from_dataset_icarl(dataset, features, task, samples_count, preds=None
     else:
         return None, None  
 
+def average_acc_stats_across_runs(data, key):
+    """
+    Compute the average accuracy statistics (mean and std) across runs
+    """
+    num_runs = data.shape[0]
+    avg_acc = np.zeros(num_runs)
+    for i in range(num_runs):
+        avg_acc[i] = np.mean(data[i][-1])
+
+    return avg_acc.mean()*100, avg_acc.std()*100
+
+def average_fgt_stats_across_runs(data, key):
+    """
+    Compute the forgetting statistics (mean and std) across runs
+    """
+    num_runs = data.shape[0]
+    fgt = np.zeros(num_runs)
+    wst_fgt = np.zeros(num_runs)
+    for i in range(num_runs):
+        fgt[i] = compute_fgt(data[i])
+
+    return fgt.mean(), fgt.std()
 
 def compute_fgt(data):
     """

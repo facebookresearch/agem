@@ -1183,7 +1183,8 @@ class Model:
                 self.train_subseq_tasks = self.opt.apply_gradients(zip(self.projected_gradients_list, self.trainable_vars))
 
         # Define training operations for the first task
-        self.train_first_task = self.opt.apply_gradients(zip(task_grads, self.trainable_vars))
+        self.first_task_gradients_vars = self.opt.compute_gradients(self.agem_loss, var_list=self.trainable_vars)
+        self.train_first_task = self.opt.apply_gradients(self.first_task_gradients_vars)
 
 
 #################################################################################

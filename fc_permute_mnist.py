@@ -44,7 +44,7 @@ VALID_ARCHS = ['FC-S', 'FC-B']
 ARCH = 'FC-S'
 
 ## Model options
-MODELS = ['VAN', 'PI', 'EWC', 'MAS', 'RWALK', 'A-GEM', 'S-GEM', 'FTR_EXT', 'PNN'] #List of valid models 
+MODELS = ['VAN', 'PI', 'EWC', 'MAS', 'RWALK', 'A-GEM', 'S-GEM', 'FTR_EXT', 'PNN', 'ER'] #List of valid models 
 IMP_METHOD = 'EWC'
 SYNAP_STGTH = 75000
 FISHER_EMA_DECAY = 0.9      # Exponential moving average decay factor for Fisher computation (online Fisher)
@@ -56,7 +56,6 @@ IMG_WIDTH = 28
 IMG_CHANNELS = 1
 TOTAL_CLASSES = 10          # Total number of classes in the dataset 
 EPS_MEM_BATCH_SIZE = 256
-KEEP_EPISODIC_MEMORY_FULL = False
 DEBUG_EPISODIC_MEMORY = False
 USE_GPU = True
 K_FOR_CROSS_VAL = 3
@@ -112,18 +111,17 @@ def get_arguments():
                        help="Exponential moving average decay for Fisher calculation at each step.")
     parser.add_argument("--fisher-update-after", type=int, default=FISHER_UPDATE_AFTER,
                        help="Number of training iterations after which the Fisher will be updated.")
-    parser.add_argument("--do-sampling", action="store_true",
-                       help="Whether to do sampling")
-    parser.add_argument("--is-herding", action="store_true",
-                        help="Herding based sampling")
     parser.add_argument("--mem-size", type=int, default=SAMPLES_PER_CLASS,
                        help="Number of samples per class from previous tasks.")
+    parser.add_argument("--eps-mem-batch", type=int, default=EPS_MEM_BATCH_SIZE,
+                       help="Number of samples per class from previous tasks.")
+    parser.add_argument("--examples-per-task", type=int, default=1000,
+                       help="Number of examples per task.")
     parser.add_argument("--log-dir", type=str, default=LOG_DIR,
                        help="Directory where the plots and model accuracies will be stored.")
     return parser.parse_args()
 
-def train_task_sequence(model, sess, cross_validate_mode, train_single_epoch, eval_single_head, do_sampling, is_herding, 
-        mem_per_class, train_iters, batch_size, num_runs, online_cross_val, random_seed):
+def train_task_sequence(model, sess, args):
     """
     Train and evaluate LLL system such that we only see a example once
     Args:
@@ -133,17 +131,24 @@ def train_task_sequence(model, sess, cross_validate_mode, train_single_epoch, ev
     # List to store accuracy for each run
     runs = []
 
+    batch_size = args.batch_size
+
+    if model.imp_method == 'A-GEM':
+        use_episodic_memory = True
+    else:
+        use_episodic_memory = False
+
     # Loop over number of runs to average over
-    for runid in range(num_runs):
+    for runid in range(args.num_runs):
         print('\t\tRun %d:'%(runid))
 
         # Initialize the random seeds
-        np.random.seed(random_seed+runid)
+        np.random.seed(args.random_seed+runid)
 
         # Load the permute mnist dataset
         datasets = construct_permute_mnist(model.num_tasks)
 
-        episodic_mem_size = mem_per_class*model.num_tasks*TOTAL_CLASSES
+        episodic_mem_size = args.mem_size*model.num_tasks*TOTAL_CLASSES
 
         # Initialize all the variables in the model
         sess.run(tf.global_variables_initializer())
@@ -157,20 +162,12 @@ def train_task_sequence(model, sess, cross_validate_mode, train_single_epoch, ev
         # List to store the classes that we have so far - used at test time
         test_labels = np.arange(TOTAL_CLASSES)
 
-        if model.imp_method == 'S-GEM':
-            # List to store the episodic memories of the previous tasks
-            task_based_memory = []
-
-        if model.imp_method == 'A-GEM':
+        if use_episodic_memory:
             # Reserve a space for episodic memory
             episodic_images = np.zeros([episodic_mem_size, INPUT_FEATURE_SIZE])
             episodic_labels = np.zeros([episodic_mem_size, TOTAL_CLASSES])
             episodic_filled_counter = 0
-
-        if do_sampling:
-            # List to store important samples from the previous tasks
-            last_task_x = None
-            last_task_y_ = None
+            count_cls = np.zeros(TOTAL_CLASSES, dtype=np.int32)
 
         # Mask for softmax
         # Since all the classes are present in all the tasks so nothing to mask
@@ -191,15 +188,9 @@ def train_task_sequence(model, sess, cross_validate_mode, train_single_epoch, ev
             if(task > 0 and model.imp_method != 'PNN'):
                 model.restore(sess)
 
-            # If sampling flag is set append the previous datasets
-            if(do_sampling and task > 0):
-                task_train_images, task_train_labels = concatenate_datasets(datasets[task]['train']['images'], 
-                                                                            datasets[task]['train']['labels'],
-                                                                            last_task_x, last_task_y_)
-            else:
-                # Extract training images and labels for the current task
-                task_train_images = datasets[task]['train']['images']
-                task_train_labels = datasets[task]['train']['labels']
+            # Extract training images and labels for the current task
+            task_train_images = datasets[task]['train']['images']
+            task_train_labels = datasets[task]['train']['labels']
 
             # If multi_task is set the train using datasets of all the tasks
             if MULTI_TASK:
@@ -210,44 +201,41 @@ def train_task_sequence(model, sess, cross_validate_mode, train_single_epoch, ev
                 else:
                     # Skip training for this task
                     continue
-            print('Received {} images, {} labels at task {}'.format(task_train_images.shape[0], task_train_labels.shape[0], task))
 
-            # Declare variables to store sample importance if sampling flag is set
-            if do_sampling:
-                # Get the sample weighting
-                task_sample_weights = get_sample_weights(task_train_labels, test_labels)
-            else:
-                # Assign equal weights to all the examples
-                task_sample_weights = np.ones([task_train_labels.shape[0]], dtype=np.float32)
-
-            num_train_examples = task_train_images.shape[0]
-
-            # Train a task observing sequence of data
-            if train_single_epoch:
-                num_iters = num_train_examples // batch_size
-            else:
-                num_iters = train_iters
-
+            # Assign equal weights to all the examples
+            task_sample_weights = np.ones([task_train_labels.shape[0]], dtype=np.float32)
+            total_train_examples = task_train_images.shape[0]
             # Randomly suffle the training examples
-            perm = np.arange(num_train_examples)
+            perm = np.arange(total_train_examples)
             np.random.shuffle(perm)
-            train_x = task_train_images[perm]
-            train_y = task_train_labels[perm]
-            task_sample_weights = task_sample_weights[perm]
+            train_x = task_train_images[perm][:args.examples_per_task]
+            train_y = task_train_labels[perm][:args.examples_per_task]
+            task_sample_weights = task_sample_weights[perm][:args.examples_per_task]
+            
+            print('Received {} images, {} labels at task {}'.format(train_x.shape[0], train_y.shape[0], task))
 
             # Array to store accuracies when training for task T
             ftask = []
+            
+            num_train_examples = train_x.shape[0]
+
+            # Train a task observing sequence of data
+            if args.train_single_epoch:
+                num_iters = num_train_examples // batch_size
+            else:
+                num_iters = args.train_iters
 
             # Training loop for task T
             for iters in range(num_iters):
 
-                if train_single_epoch and not cross_validate_mode:
+                if args.train_single_epoch and not args.cross_validate_mode:
                     if (iters < 10) or (iters < 100 and iters % 10 == 0) or (iters % 100 == 0):
                         # Snapshot the current performance across all tasks after each mini-batch
-                        fbatch = test_task_sequence(model, sess, datasets, online_cross_val, eval_single_head=eval_single_head)
+                        fbatch = test_task_sequence(model, sess, datasets, args.online_cross_val)
                         ftask.append(fbatch)
 
                 offset = (iters * batch_size) % (num_train_examples - batch_size)
+                residual = batch_size
 
                 if model.imp_method == 'PNN':
                     pnn_train_phase[:] = False
@@ -296,33 +284,17 @@ def train_task_sequence(model, sess, cross_validate_mode, train_single_epoch, ev
                 elif model.imp_method == 'MAS':
                     _, loss = sess.run([model.train, model.reg_loss], feed_dict=feed_dict)
 
-                elif model.imp_method == 'S-GEM':
-                    if task == 0:
-                        # Normal application of gradients
-                        _, loss = sess.run([model.train_first_task, model.agem_loss], feed_dict=feed_dict)
-                    else:
-                        # Randomly sample a task from the previous tasks
-                        prev_task = np.random.randint(0, task)
-                        # Store the reference gradient
-                        sess.run(model.store_ref_grads, feed_dict={model.x: task_based_memory[prev_task]['images'], model.y_: task_based_memory[prev_task]['labels'],
-                            model.keep_prob: 1.0, model.output_mask: logit_mask, model.train_phase: True})
-                        # Compute the gradient for current task and project if need be
-                        _, loss = sess.run([model.train_subseq_tasks, model.agem_loss], feed_dict=feed_dict)
-
                 elif model.imp_method == 'A-GEM':
                     if task == 0:
                         # Normal application of gradients
                         _, loss = sess.run([model.train_first_task, model.agem_loss], feed_dict=feed_dict)
                     else:
                         ## Compute and store the reference gradients on the previous tasks
-                        if KEEP_EPISODIC_MEMORY_FULL:
-                            mem_sample_mask = np.random.choice(episodic_mem_size, EPS_MEM_BATCH_SIZE, replace=False) # Sample without replacement so that we don't sample an example more than once
+                        if episodic_filled_counter <= args.eps_mem_batch:
+                            mem_sample_mask = np.arange(episodic_filled_counter)
                         else:
-                            if episodic_filled_counter <= EPS_MEM_BATCH_SIZE:
-                                mem_sample_mask = np.arange(episodic_filled_counter)
-                            else:
-                                # Sample a random subset from episodic memory buffer
-                                mem_sample_mask = np.random.choice(episodic_filled_counter, EPS_MEM_BATCH_SIZE, replace=False) # Sample without replacement so that we don't sample an example more than once
+                            # Sample a random subset from episodic memory buffer
+                            mem_sample_mask = np.random.choice(episodic_filled_counter, args.eps_mem_batch, replace=False) # Sample without replacement so that we don't sample an example more than once
                         # Store the reference gradient
                         sess.run(model.store_ref_grads, feed_dict={model.x: episodic_images[mem_sample_mask], model.y_: episodic_labels[mem_sample_mask],
                             model.keep_prob: 1.0, model.output_mask: logit_mask, model.train_phase: True})
@@ -331,6 +303,16 @@ def train_task_sequence(model, sess, cross_validate_mode, train_single_epoch, ev
                         else:
                             # Compute the gradient for current task and project if need be
                             _, loss = sess.run([model.train_subseq_tasks, model.agem_loss], feed_dict=feed_dict)
+                    # Put the batch in the ring buffer
+                    for er_x, er_y_ in zip(train_x[offset:offset+residual], train_y[offset:offset+residual]):
+                        cls = np.unique(np.nonzero(er_y_))[-1]
+                        # Write the example at the location pointed by count_cls[cls]
+                        cls_to_index_map = cls
+                        with_in_task_offset = args.mem_size  * cls_to_index_map
+                        mem_index = count_cls[cls] + with_in_task_offset + episodic_filled_counter
+                        episodic_images[mem_index] = er_x
+                        episodic_labels[mem_index] = er_y_
+                        count_cls[cls] = (count_cls[cls] + 1) % args.mem_size
 
                 elif model.imp_method == 'RWALK':
                     # If first iteration of the first task then set the initial value of the running fisher
@@ -352,7 +334,7 @@ def train_task_sequence(model, sess, cross_validate_mode, train_single_epoch, ev
                     _, _, _, _, loss = sess.run([model.set_tmp_fisher, model.weights_old_ops_grouped, 
                         model.train, model.update_small_omega, model.reg_loss], feed_dict=feed_dict)
 
-                if (iters % 500 == 0):
+                if (iters % 100 == 0):
                     print('Step {:d} {:.3f}'.format(iters, loss))
 
                 if (math.isnan(loss)):
@@ -360,6 +342,10 @@ def train_task_sequence(model, sess, cross_validate_mode, train_single_epoch, ev
                     sys.exit(0)
 
             print('\t\t\t\tTraining for Task%d done!'%(task))
+
+            # Upaate the episodic memory filled counter
+            if use_episodic_memory:
+                episodic_filled_counter += args.mem_size * TOTAL_CLASSES
 
             if model.imp_method == 'A-GEM' and COUNT_VIOLATIONS:
                 violation_count[task] = vc
@@ -372,98 +358,8 @@ def train_task_sequence(model, sess, cross_validate_mode, train_single_epoch, ev
                 model.task_updates(sess, task, task_train_images, np.arange(TOTAL_CLASSES))
                 print('\t\t\t\tTask updates after Task%d done!'%(task))
 
-                # If importance method is '*-GEM' then store the episodic memory for the task
-                if 'GEM' in model.imp_method:
-                    data_to_sample_from = {
-                            'images': task_train_images,
-                            'labels': task_train_labels,
-                            }
-                    if model.imp_method == 'S-GEM':
-                        # Get the important samples from the current task
-                        if is_herding: # Sampling based on MoF
-                            # Compute the features of training data
-                            features_dim = model.image_feature_dim
-                            features = np.zeros([num_train_examples, features_dim])
-                            samples_at_a_time = 100
-                            for i in range(num_train_examples// samples_at_a_time):
-                                offset = i * samples_at_a_time
-                                features[offset:offset+samples_at_a_time] = sess.run(model.features, feed_dict={model.x: task_train_images[offset:offset+samples_at_a_time], 
-                                    model.y_: task_train_labels[offset:offset+samples_at_a_time], model.keep_prob: 1.0, 
-                                    model.output_mask: logit_mask, model.train_phase: False})
-                            imp_images, imp_labels = sample_from_dataset_icarl(data_to_sample_from, features, np.arange(TOTAL_CLASSES), SAMPLES_PER_CLASS)
-                        else: # Random sampling
-                            # Do the uniform sampling
-                            importance_array = np.ones(num_train_examples, dtype=np.float32)
-                            imp_images, imp_labels = sample_from_dataset(data_to_sample_from, importance_array, np.arange(TOTAL_CLASSES), SAMPLES_PER_CLASS)
-                        task_memory = {
-                                'images': deepcopy(imp_images),
-                                'labels': deepcopy(imp_labels),
-                                }
-                        task_based_memory.append(task_memory)
-
-                    elif model.imp_method == 'A-GEM':
-                        if is_herding: # Sampling based on MoF
-                            # Compute the features of training data
-                            features_dim = model.image_feature_dim
-                            features = np.zeros([num_train_examples, features_dim])
-                            samples_at_a_time = 100
-                            for i in range(num_train_examples// samples_at_a_time):
-                                offset = i * samples_at_a_time
-                                features[offset:offset+samples_at_a_time] = sess.run(model.features, feed_dict={model.x: task_train_images[offset:offset+samples_at_a_time], 
-                                    model.y_: task_train_labels[offset:offset+samples_at_a_time], model.keep_prob: 1.0, 
-                                    model.output_mask: logit_mask, model.train_phase: False})
-                            if KEEP_EPISODIC_MEMORY_FULL:
-                                update_episodic_memory(data_to_sample_from, features, episodic_mem_size, task, episodic_images, episodic_labels, task_labels=np.arange(TOTAL_CLASSES), is_herding=True)
-                            else:
-                                imp_images, imp_labels = sample_from_dataset_icarl(data_to_sample_from, features, np.arange(TOTAL_CLASSES), SAMPLES_PER_CLASS)
-                        else: # Random sampling
-                            # Do the uniform sampling
-                            importance_array = np.ones(num_train_examples, dtype=np.float32)
-                            if KEEP_EPISODIC_MEMORY_FULL:
-                                update_episodic_memory(data_to_sample_from, importance_array, episodic_mem_size, task, episodic_images, episodic_labels)
-                            else:
-                                imp_images, imp_labels = sample_from_dataset(data_to_sample_from, importance_array, np.arange(TOTAL_CLASSES), SAMPLES_PER_CLASS)
-                        if not KEEP_EPISODIC_MEMORY_FULL: # Fill the memory to always keep M/T samples per task
-                            total_imp_samples = imp_images.shape[0]
-                            eps_offset = task * total_imp_samples
-                            episodic_images[eps_offset:eps_offset+total_imp_samples] = imp_images
-                            episodic_labels[eps_offset:eps_offset+total_imp_samples] = imp_labels
-                            episodic_filled_counter += total_imp_samples
-                        # Inspect episodic memory
-                        if DEBUG_EPISODIC_MEMORY:
-                            # Which labels are present in the memory
-                            unique_labels = np.unique(np.nonzero(episodic_labels)[-1])
-                            print('Unique Labels present in the episodic memory'.format(unique_labels))
-                            print('Labels count:')
-                            for lbl in unique_labels:
-                                print('Label {}: {} samples'.format(lbl, np.where(np.nonzero(episodic_labels)[-1] == lbl)[0].size))
-                            # Is there any space which is not filled
-                            print('Empty space: {}'.format(np.where(np.sum(episodic_labels, axis=1) == 0)))
-                        print('Episodic memory of {} images at task {} saved!'.format(episodic_images.shape[0], task))
-
-                # If sampling flag is set, store few of the samples from previous task
-                if do_sampling:
-                    # Do the uniform sampling/ only get examples from current task
-                    importance_array = np.ones([datasets[task]['train']['images'].shape[0]], dtype=np.float32)
-                    # Get the important samples from the current task
-                    imp_images, imp_labels = sample_from_dataset(datasets[task]['train'], importance_array, 
-                            np.arange(TOTAL_CLASSES), SAMPLES_PER_CLASS)
-
-                    if imp_images is not None:
-                        if last_task_x is None:
-                            last_task_x = imp_images
-                            last_task_y_ = imp_labels
-                        else:
-                            last_task_x = np.concatenate((last_task_x, imp_images), axis=0)
-                            last_task_y_ = np.concatenate((last_task_y_, imp_labels), axis=0)
-
-                    # Delete the importance array now that you don't need it in the current run
-                    del importance_array
-
-                    print('\t\t\t\tEpisodic memory of {} is saved for Task {}!'.format(imp_labels.shape[0], task))
-
-            if train_single_epoch and not cross_validate_mode: 
-                fbatch = test_task_sequence(model, sess, datasets, False, eval_single_head=eval_single_head)
+            if args.train_single_epoch and not args.cross_validate_mode: 
+                fbatch = test_task_sequence(model, sess, datasets, False)
                 ftask.append(fbatch)
                 ftask = np.array(ftask)
             else:
@@ -473,10 +369,10 @@ def train_task_sequence(model, sess, cross_validate_mode, train_single_epoch, ev
                             'labels': episodic_labels,
                             }
                     # Measure perf on episodic memory
-                    ftask = test_task_sequence(model, sess, eps_mem, online_cross_val, eval_single_head=eval_single_head)
+                    ftask = test_task_sequence(model, sess, eps_mem, args.online_cross_val)
                 else:
                     # List to store accuracy for all the tasks for the current trained model
-                    ftask = test_task_sequence(model, sess, datasets, online_cross_val, eval_single_head=eval_single_head)
+                    ftask = test_task_sequence(model, sess, datasets, args.online_cross_val)
             
             # Store the accuracies computed at task T in a list
             evals.append(ftask)
@@ -493,7 +389,7 @@ def train_task_sequence(model, sess, cross_validate_mode, train_single_epoch, ev
 
     return runs
 
-def test_task_sequence(model, sess, test_data, cross_validate_mode, eval_single_head=True):
+def test_task_sequence(model, sess, test_data, cross_validate_mode):
     """
     Snapshot the current performance
     """
@@ -567,7 +463,6 @@ def main():
     # Generate the experiment key and store the meta data in a file
     exper_meta_data = {'DATASET': 'PERMUTE_MNIST',
             'NUM_RUNS': args.num_runs,
-            'EVAL_SINGLE_HEAD': args.eval_single_head, 
             'TRAIN_SINGLE_EPOCH': args.train_single_epoch, 
             'IMP_METHOD': args.imp_method, 
             'SYNAP_STGTH': args.synap_stgth,
@@ -576,11 +471,9 @@ def main():
             'OPTIM': args.optim, 
             'LR': args.learning_rate, 
             'BATCH_SIZE': args.batch_size, 
-            'EPS_MEMORY': args.do_sampling, 
-            'MEM_SIZE': args.mem_size,
-            'IS_HERDING': args.is_herding}
-    experiment_id = "PERMUTE_MNIST_HERDING_%r_%s_%r_%r_%s_%s_%s_%r_%s-"%(args.is_herding, args.arch, args.eval_single_head, args.train_single_epoch, args.imp_method, str(args.synap_stgth).replace('.', '_'), 
-            str(args.batch_size), args.do_sampling, str(args.mem_size)) + datetime.datetime.now().strftime("%y-%m-%d-%H-%M")
+            'MEM_SIZE': args.mem_size}
+    experiment_id = "PERMUTE_MNIST_HERDING_%s_%s_%s_%s_%r_%s-"%(args.arch, args.train_single_epoch, args.imp_method, str(args.synap_stgth).replace('.', '_'), 
+            str(args.batch_size), str(args.mem_size)) + datetime.datetime.now().strftime("%y-%m-%d-%H-%M")
     snapshot_experiment_meta_data(args.log_dir, experiment_id, exper_meta_data)
 
     # Get the subset of data depending on training or cross-validation mode
@@ -599,7 +492,7 @@ def main():
     with graph.as_default():
 
         # Set the random seed
-        tf.set_random_seed(RANDOM_SEED)
+        tf.set_random_seed(args.random_seed)
 
         # Define Input and Output of the model
         x = tf.placeholder(tf.float32, shape=[None, INPUT_FEATURE_SIZE])
@@ -638,8 +531,7 @@ def main():
 
         time_start = time.time()
         with tf.Session(config=config, graph=graph) as sess:
-            runs = train_task_sequence(model, sess, args.cross_validate_mode, args.train_single_epoch, args.eval_single_head, 
-                    args.do_sampling, args.is_herding, args.mem_size, args.train_iters, args.batch_size, args.num_runs, args.online_cross_val, args.random_seed)
+            runs = train_task_sequence(model, sess, args)
             # Close the session
             sess.close()
         time_end = time.time()

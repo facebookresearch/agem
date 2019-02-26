@@ -173,7 +173,7 @@ def get_arguments():
                        help="Directory where the plots and model accuracies will be stored.")
     return parser.parse_args()
 
-def train_task_sequence(model, sess, saver, datasets, class_attr, num_classes_per_task, cross_validate_mode, train_single_epoch, eval_single_head, do_sampling, is_herding,  
+def train_task_sequence(model, sess, saver, datasets, class_attr, num_classes_per_task, cross_validate_mode, train_single_epoch, do_sampling, is_herding,  
         episodic_mem_size, train_iters, batch_size, num_runs, init_checkpoint, online_cross_val, random_seed):
     """
     Train and evaluate LLL system such that we only see a example once
@@ -808,7 +808,6 @@ def main():
                     'DATASET': 'SPLIT_AWA',
                     'HYBRID': args.set_hybrid,
                     'NUM_RUNS': args.num_runs,
-                    'EVAL_SINGLE_HEAD': args.eval_single_head, 
                     'TRAIN_SINGLE_EPOCH': args.train_single_epoch, 
                     'IMP_METHOD': imp_method, 
                     'SYNAP_STGTH': synap_stgth,
@@ -820,7 +819,7 @@ def main():
                     'EPS_MEMORY': args.do_sampling, 
                     'MEM_SIZE': args.mem_size, 
                     'IS_HERDING': args.is_herding}
-                experiment_id = "SPLIT_AWA_HERDING_%r_HYB_%r_%s_%r_%r_%s_%s_%s_%r_%s-"%(args.is_herding, args.set_hybrid, args.arch, args.eval_single_head, args.train_single_epoch, imp_method, 
+                experiment_id = "SPLIT_AWA_HERDING_%r_HYB_%r_%s_%r_%s_%s_%s_%r_%s-"%(args.is_herding, args.set_hybrid, args.arch, args.train_single_epoch, imp_method, 
                         str(synap_stgth).replace('.', '_'), 
                         str(args.batch_size), args.do_sampling, str(args.mem_size)) + datetime.datetime.now().strftime("%y-%m-%d-%H-%M")
                 snapshot_experiment_meta_data(args.log_dir, experiment_id, exper_meta_data)
@@ -872,7 +871,7 @@ def main():
                     with tf.Session(config=config, graph=graph) as sess:
                         saver = tf.train.Saver(var_list=tf.global_variables(), max_to_keep=100)
                         runs, task_labels_dataset = train_task_sequence(model, sess, saver, datasets, AWA_attr, CLASSES_PER_TASK, args.cross_validate_mode, 
-                                args.train_single_epoch, args.eval_single_head, args.do_sampling, args.is_herding, args.mem_size*CLASSES_PER_TASK*num_tasks, args.train_iters, 
+                                args.train_single_epoch, args.do_sampling, args.is_herding, args.mem_size*CLASSES_PER_TASK*num_tasks, args.train_iters, 
                                 args.batch_size, args.num_runs, args.init_checkpoint, args.online_cross_val, args.random_seed)
                         # Close the session
                         sess.close()
