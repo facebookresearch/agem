@@ -390,3 +390,16 @@ def compute_fgt(data):
 
     avg_fgt = fgt/ float(num_tasks - 1)
     return avg_fgt
+
+def update_reservior(current_image, current_label, episodic_images, episodic_labels, M, N):
+    """
+    Update the episodic memory with current example using the reservior sampling
+    """
+    if M > N:
+        episodic_images[N] = current_image
+        episodic_labels[N] = current_label
+    else:
+        j = np.random.randint(0, N)
+        if j < M:
+           episodic_images[j] = current_image
+           episodic_labels[j] = current_label

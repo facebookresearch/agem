@@ -21,7 +21,7 @@ from copy import deepcopy
 from six.moves import cPickle as pickle
 
 from utils.data_utils import construct_permute_mnist
-from utils.utils import get_sample_weights, sample_from_dataset, update_episodic_memory, concatenate_datasets, samples_for_each_class, sample_from_dataset_icarl, compute_fgt
+from utils.utils import get_sample_weights, sample_from_dataset, update_episodic_memory, concatenate_datasets, samples_for_each_class, sample_from_dataset_icarl, compute_fgt, update_reservior
 from utils.vis_utils import plot_acc_multiple_runs, plot_histogram, snapshot_experiment_meta_data, snapshot_experiment_eval
 from model import Model
 
@@ -133,7 +133,7 @@ def train_task_sequence(model, sess, args):
 
     batch_size = args.batch_size
 
-    if model.imp_method == 'A-GEM':
+    if model.imp_method == 'A-GEM' or model.imp_method == 'ER':
         use_episodic_memory = True
     else:
         use_episodic_memory = False
@@ -166,8 +166,9 @@ def train_task_sequence(model, sess, args):
             # Reserve a space for episodic memory
             episodic_images = np.zeros([episodic_mem_size, INPUT_FEATURE_SIZE])
             episodic_labels = np.zeros([episodic_mem_size, TOTAL_CLASSES])
-            episodic_filled_counter = 0
             count_cls = np.zeros(TOTAL_CLASSES, dtype=np.int32)
+            episodic_filled_counter = 0
+            examples_seen_so_far = 0
 
         # Mask for softmax
         # Since all the classes are present in all the tasks so nothing to mask
@@ -333,6 +334,24 @@ def train_task_sequence(model, sess, args):
 
                     _, _, _, _, loss = sess.run([model.set_tmp_fisher, model.weights_old_ops_grouped, 
                         model.train, model.update_small_omega, model.reg_loss], feed_dict=feed_dict)
+
+                elif model.imp_method == 'ER':
+                    mem_filled_so_far = examples_seen_so_far if (examples_seen_so_far < episodic_mem_size) else episodic_mem_size
+                    if mem_filled_so_far < args.eps_mem_batch:
+                        er_mem_indices = np.arange(mem_filled_so_far)
+                    else:
+                        er_mem_indices = np.random.choice(mem_filled_so_far, args.eps_mem_batch, replace=False)
+                    np.random.shuffle(er_mem_indices)
+                    # Train on a batch of episodic memory first
+                    er_train_x_batch = np.concatenate((episodic_images[er_mem_indices], train_x[offset:offset+residual]), axis=0)
+                    er_train_y_batch = np.concatenate((episodic_labels[er_mem_indices], train_y[offset:offset+residual]), axis=0)
+                    feed_dict = {model.x: er_train_x_batch, model.y_: er_train_y_batch,
+                        model.training_iters: num_iters, model.train_step: iters, model.keep_prob: 1.0,
+                        model.output_mask: logit_mask, model.train_phase: True}
+                    _, loss = sess.run([model.train, model.reg_loss], feed_dict=feed_dict)
+                    for er_x, er_y_ in zip(train_x[offset:offset+residual], train_y[offset:offset+residual]):
+                        update_reservior(er_x, er_y_, episodic_images, episodic_labels, episodic_mem_size, examples_seen_so_far)
+                        examples_seen_so_far += 1
 
                 if (iters % 100 == 0):
                     print('Step {:d} {:.3f}'.format(iters, loss))

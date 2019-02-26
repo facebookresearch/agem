@@ -75,9 +75,9 @@ class Model:
         else:
             self.total_classes = int(self.y_.get_shape()[1])
             self.train_phase = tf.placeholder(tf.bool, name='train_phase')
-            if imp_method == 'A-GEM' and 'FC-' not in network_arch: # Only for Split-X setups
+            if (imp_method == 'A-GEM' or imp_method == 'ER') and 'FC-' not in network_arch: # Only for Split-X setups
                 self.output_mask = [tf.placeholder(dtype=tf.float32, shape=[self.total_classes]) for i in range(num_tasks)]
-                self.mem_batch_size= tf.placeholder(dtype=tf.float32, shape=())
+                self.mem_batch_size = tf.placeholder(dtype=tf.float32, shape=())
             else:
                 self.output_mask = tf.placeholder(dtype=tf.float32, shape=[self.total_classes])
         self.sample_weights = tf.placeholder(tf.float32, shape=[None])
@@ -214,7 +214,7 @@ class Model:
                         self.task_logits.append(self.extensible_resnet_column_progNN(x, kernels, filters, strides, i))
                     self.task_pruned_logits.append(tf.where(tf.tile(tf.equal(self.output_mask[i][None,:], 1.0), [tf.shape(self.task_logits[i])[0], 1]), self.task_logits[i], NEG_INF*tf.ones_like(self.task_logits[i])))
                     self.unweighted_entropy.append(tf.squeeze(tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=y_[i], logits=self.task_pruned_logits[i]))))
-            elif self.imp_method == 'A-GEM':
+            elif self.imp_method == 'A-GEM' or self.imp_method == 'ER':
                 logits = self.resnet18_conv_feedforward(x, kernels, filters, strides)
                 self.task_pruned_logits = []
                 self.unweighted_entropy = []
@@ -228,7 +228,7 @@ class Model:
 
         # Prune the predictions to only include the classes for which
         # the training data is present
-        if (self.imp_method != 'PNN') and (self.imp_method != 'A-GEM' or 'FC-' in self.network_arch):
+        if (self.imp_method != 'PNN') and ((self.imp_method != 'A-GEM' and self.imp_method != 'ER') or 'FC-' in self.network_arch):
             self.pruned_logits = tf.where(tf.tile(tf.equal(self.output_mask[None,:], 1.0), [tf.shape(logits)[0], 1]), logits, NEG_INF*tf.ones_like(logits))
 
         # Create list of variables for storing different measures
@@ -237,7 +237,7 @@ class Model:
         self.init_vars()
 
         # Different entropy measures/ loss definitions
-        if (self.imp_method != 'PNN') and (self.imp_method != 'A-GEM' or 'FC-' in self.network_arch):
+        if (self.imp_method != 'PNN') and ((self.imp_method != 'A-GEM' and self.imp_method != 'ER') or 'FC-' in self.network_arch):
             self.mse = 2.0*tf.nn.l2_loss(self.pruned_logits) # tf.nn.l2_loss computes sum(T**2)/ 2
             self.weighted_entropy = tf.reduce_mean(tf.losses.softmax_cross_entropy(y_, 
                 self.pruned_logits, self.sample_weights, reduction=tf.losses.Reduction.NONE))
@@ -284,7 +284,7 @@ class Model:
             self.merged_summary = tf.summary.merge_all()
 
         # Accuracy measure
-        if (self.imp_method == 'PNN') or (self.imp_method == 'A-GEM' and 'FC-' not in self.network_arch):
+        if (self.imp_method == 'PNN') or ((self.imp_method == 'A-GEM' or self.imp_method == 'ER') and 'FC-' not in self.network_arch):
             self.correct_predictions = []
             self.accuracy = []
             for i in range(self.num_tasks):
@@ -845,7 +845,7 @@ class Model:
         Returns:
         """
         reg = 0.0
-        if imp_method == 'VAN'  or imp_method == 'PNN' or 'GEM' in imp_method:
+        if imp_method == 'VAN'  or imp_method == 'PNN' or imp_method == 'ER' or 'GEM' in imp_method:
             pass
         elif imp_method == 'EWC' or imp_method == 'M-EWC':
             reg = tf.add_n([tf.reduce_sum(tf.square(w - w_star) * f) for w, w_star, 
@@ -875,11 +875,14 @@ class Model:
                 self.reg_gradients_vars.append([])
                 self.reg_gradients_vars[i] = self.opt.compute_gradients(self.unweighted_entropy[i], var_list=self.trainable_vars[i])
         elif imp_method != 'A-GEM': # For A-GEM we will define the losses and gradients later on
-            # Regularized training loss
-            self.reg_loss = tf.squeeze(self.unweighted_entropy + self.synap_stgth * reg)
-            # Compute the gradients of the vanilla loss
-            self.vanilla_gradients_vars = self.opt.compute_gradients(self.unweighted_entropy, 
-                    var_list=self.trainable_vars)
+            if imp_method == 'ER' and 'FC-' not in self.network_arch:
+                self.reg_loss = tf.add_n([self.unweighted_entropy[i] for i in range(self.num_tasks)])/ self.mem_batch_size
+            else:
+                # Regularized training loss
+                self.reg_loss = tf.squeeze(self.unweighted_entropy + self.synap_stgth * reg)
+                # Compute the gradients of the vanilla loss
+                self.vanilla_gradients_vars = self.opt.compute_gradients(self.unweighted_entropy, 
+                        var_list=self.trainable_vars)
             # Compute the gradients of regularized loss
             self.reg_gradients_vars = self.opt.compute_gradients(self.reg_loss, 
                     var_list=self.trainable_vars)
@@ -891,7 +894,7 @@ class Model:
 
         Returns:
         """
-        if self.imp_method == 'VAN':
+        if self.imp_method == 'VAN' or self.imp_method == 'ER':
             # Define training operation
             self.train = self.opt.apply_gradients(self.reg_gradients_vars)
         elif self.imp_method == 'PNN': 
