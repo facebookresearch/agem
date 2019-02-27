@@ -1,6 +1,6 @@
 # Efficient Lifelong Learning with A-GEM
 
-This is the official implementation of the [Averaged Gradient Episodic Memory (A-GEM)](https://arxiv.org/abs/1812.00420) in Tensorflow.
+This is the official implementation of the [Averaged Gradient Episodic Memory (A-GEM)](https://arxiv.org/abs/1812.00420) and [Experience Replay with Tiny Memories](https://arxiv.org/abs/1812.00420) in Tensorflow.
 
 ## Requirements
 
@@ -10,12 +10,12 @@ TensorFlow >= v1.9.0.
 
 To replicate the results of the paper on a particular dataset, execute (see the Note below for downloading the CUB and AWA datasets):
 ```bash
-$ ./replicate_results.sh <DATASET> <THREAD-ID> <JE>
+$ ./replicate_results_iclr19.sh <DATASET> <THREAD-ID> <JE>
 ```
 Example runs are:
 ```bash
-$ ./replicate_results.sh MNIST 3      /* Train PNN and A-GEM on MNIST */
-$ ./replicate_results.sh CUB 1 1      /* Train JE models of RWALK and A-GEM on CUB */
+$ ./replicate_results_iclr19.sh MNIST 3      /* Train PNN and A-GEM on MNIST */
+$ ./replicate_results_iclr19.sh CUB 1 1      /* Train JE models of RWALK and A-GEM on CUB */
 ```
 
 ### Note
@@ -26,6 +26,12 @@ $ ./download_cub_awa.sh
 ```
 The plotting code is provided under the folder `plotting_code/`. Update the paths in the plotting code accordingly.
  
+## Experience Replay
+ The code provides an implementation of experience replay (ER) with reservoir sampling on MNIST and CIFAR datasets. To run the ER experiments execute the following script:
+```bash
+$ ./replicate_results_er.sh
+```
+
 When using this code, please cite our papers:
 
 ```
