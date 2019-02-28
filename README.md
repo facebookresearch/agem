@@ -1,6 +1,6 @@
 # Efficient Lifelong Learning with A-GEM
 
-This is the official implementation of the [Averaged Gradient Episodic Memory (A-GEM)](https://arxiv.org/abs/1812.00420) and [Experience Replay with Tiny Memories](https://arxiv.org/abs/1812.00420) in Tensorflow.
+This is the official implementation of the [Averaged Gradient Episodic Memory (A-GEM)](https://arxiv.org/abs/1812.00420) and [Experience Replay with Tiny Memories](http://arxiv.org/abs/1902.10486) in Tensorflow.
 
 ## Requirements
 
@@ -39,6 +39,13 @@ When using this code, please cite our papers:
   title={Efficient Lifelong Learning with A-GEM},
   author={Chaudhry, Arslan and Ranzato, Marc’Aurelio and Rohrbach, Marcus and Elhoseiny, Mohamed},
   booktitle={ICLR},
+  year={2019}
+}
+
+@article{chaudhryER_2019,
+  title={Continual Learning with Tiny Episodic Memories},
+  author={Chaudhry, Arslan and Rohrbach, Marcus and Elhoseiny, Mohamed and Ajanthan, Thalaiyasingam and Dokania, Puneet K and Torr, Philip HS and Ranzato, Marc’Aurelio},
+  journal={arXiv preprint arXiv:1902.10486, 2019},
   year={2019}
 }
 
